@@ -1,0 +1,588 @@
+/* Field Guide — print stylesheet. Hand-written, not Tailwind, because it has
+   to be print-perfect. Color tokens match the web app's design system. */
+
+:root {
+  --ink: #0B1027;
+  --amber: #E8A317;
+  --amber-deep: #B07700;
+  --cream: #F4EEDE;
+  --paper: #FAF6EA;
+  --text: #14172E;
+  --mute: #6B6B6B;
+  --hairline: rgba(11, 16, 39, 0.18);
+  --hairline-on-dark: rgba(244, 238, 222, 0.25);
+}
+
+@page {
+  size: A4 portrait;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--cream);
+  font-size: 11pt;
+  line-height: 1.55;
+}
+
+.page {
+  width: 210mm;
+  height: 297mm;
+  padding: 14mm 16mm;
+  page-break-after: always;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.page:last-child { page-break-after: auto; }
+
+.page.cream { background: var(--cream); color: var(--text); }
+.page.paper { background: var(--paper); color: var(--text); }
+.page.dark  { background: var(--ink);   color: var(--cream); }
+
+/* Editorial chrome — kicker top-left, page number top-right, hairline rule */
+.chrome-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 8pt;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--mute);
+  padding-bottom: 6mm;
+  border-bottom: 0.4pt solid var(--hairline);
+  margin-bottom: 8mm;
+}
+.page.dark .chrome-top { color: rgba(244, 238, 222, 0.7); border-bottom-color: var(--hairline-on-dark); }
+.chrome-top .kicker { font-weight: 500; }
+.chrome-top .page-no { font-variant-numeric: tabular-nums; }
+
+.chrome-bot {
+  margin-top: auto;
+  padding-top: 6mm;
+  border-top: 0.4pt solid var(--hairline);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 8pt;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.page.dark .chrome-bot { color: rgba(244, 238, 222, 0.7); border-top-color: var(--hairline-on-dark); }
+
+/* Typography primitives */
+.display {
+  font-family: 'Fraunces', ui-serif, Georgia, serif;
+  font-weight: 600;
+  font-variation-settings: "opsz" 144;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+}
+.title-l { font-size: 56pt; }
+.title-m { font-size: 32pt; }
+.title-s { font-size: 22pt; }
+
+.kicker-label {
+  font-size: 8pt;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mute);
+  font-weight: 500;
+}
+.page.dark .kicker-label { color: var(--amber); }
+
+.amber { color: var(--amber-deep); font-weight: 500; }
+.page.dark .amber { color: var(--amber); }
+
+.inline-kicker {
+  display: inline-block;
+  font-size: 8pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-right: 0.4em;
+}
+.page.dark .inline-kicker { color: rgba(244, 238, 222, 0.7); }
+
+/* The draft prompt emits <span class="kicker"> inline labels — style them
+   (previously only .inline-kicker was styled, so these rendered as plain text). */
+.prose .kicker {
+  display: inline-block;
+  font-size: 8pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--amber-deep);
+  font-weight: 600;
+  margin-right: 0.4em;
+}
+.page.dark .prose .kicker { color: var(--amber); }
+
+/* Lede — the section's opening claim, set bigger than body text. */
+.prose .lede {
+  font-family: 'Fraunces', serif;
+  font-size: 14.5pt;
+  line-height: 1.35;
+  color: var(--ink);
+  margin-bottom: 6mm;
+}
+.page.dark .prose .lede { color: var(--cream); }
+
+/* Body prose defaults */
+.prose p,
+.prose ul,
+.prose ol,
+.prose blockquote { margin: 0 0 5mm 0; }
+.prose p { font-size: 11pt; line-height: 1.55; }
+.prose ul { padding-left: 5mm; }
+.prose ul li { margin-bottom: 2mm; position: relative; }
+.prose ol { padding-left: 7mm; }
+.prose ol li { margin-bottom: 3mm; padding-left: 1mm; }
+.prose ol li::marker { font-family: 'Fraunces', serif; color: var(--amber-deep); font-weight: 600; }
+.prose strong { color: var(--ink); font-weight: 600; }
+.page.dark .prose strong { color: var(--cream); }
+.prose code {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.92em;
+  background: rgba(232, 163, 23, 0.14);
+  color: var(--amber-deep);
+  padding: 0.05em 0.4em;
+  border-radius: 2px;
+}
+.page.dark .prose code { background: rgba(232, 163, 23, 0.2); color: var(--amber); }
+.prose pre {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 9.5pt;
+  background: var(--ink);
+  color: var(--cream);
+  padding: 4mm;
+  border-radius: 2mm;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: visible;
+  margin: 0 0 5mm 0;
+}
+
+/* Comparison panel for the comparison kind. */
+.prose table.vs {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6mm 0;
+  font-size: 10pt;
+}
+.prose table.vs th {
+  font-family: 'Fraunces', serif;
+  font-size: 11.5pt;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  padding: 2mm 3mm;
+  border-bottom: 1.5pt solid var(--amber);
+}
+.prose table.vs td {
+  padding: 2mm 3mm;
+  border-bottom: 0.4pt solid var(--hairline);
+  vertical-align: top;
+  line-height: 1.45;
+}
+.page.dark .prose table.vs th { color: var(--cream); }
+.page.dark .prose table.vs td { border-bottom-color: var(--hairline-on-dark); }
+.prose blockquote {
+  position: relative;
+  border-left: 2pt solid var(--amber);
+  padding: 1mm 0 1mm 7mm;
+  margin: 7mm 0 7mm 0;
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-size: 17pt;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.prose blockquote::before {
+  content: '\201C';
+  position: absolute;
+  left: 2.5mm;
+  top: -7mm;
+  font-family: 'Fraunces', serif;
+  font-size: 34pt;
+  font-style: normal;
+  color: var(--amber);
+  opacity: 0.85;
+}
+.page.dark .prose blockquote { color: var(--amber); border-left-color: var(--amber); }
+
+/* Drop cap on the lead paragraph of feature pages — classic magazine cue. */
+.page-problem .prose > p:first-child::first-letter,
+.page-body .prose > p:first-child::first-letter,
+.page-comparison .prose > p:first-child::first-letter,
+.page-why .prose > p:first-child::first-letter {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 34pt;
+  line-height: 0.85;
+  float: left;
+  padding: 1mm 2mm 0 0;
+  color: var(--amber-deep);
+}
+.page.dark .prose > p:first-child::first-letter { color: var(--amber); }
+
+/* Callout aside — "the part most people miss". At most one per section. */
+.prose aside.callout {
+  margin: 6mm 0;
+  padding: 5mm 6mm;
+  border: 0.6pt solid var(--hairline);
+  border-left: 2.5pt solid var(--amber);
+  border-radius: 1.5mm;
+  background: rgba(232, 163, 23, 0.07);
+  font-size: 10.5pt;
+  line-height: 1.5;
+}
+.prose aside.callout .kicker {
+  display: block;
+  font-size: 7.5pt;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--amber-deep);
+  font-weight: 600;
+  margin-bottom: 1.5mm;
+}
+.page.dark .prose aside.callout {
+  border-color: var(--hairline-on-dark);
+  border-left-color: var(--amber);
+  background: rgba(232, 163, 23, 0.12);
+}
+.page.dark .prose aside.callout .kicker { color: var(--amber); }
+
+/* Stat row — up to three oversized numbers with labels. */
+.prose .stats {
+  display: flex;
+  gap: 6mm;
+  margin: 6mm 0;
+}
+.prose .stats .stat {
+  flex: 1;
+  border-top: 2pt solid var(--amber);
+  padding-top: 2.5mm;
+}
+.prose .stats .stat strong {
+  display: block;
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 26pt;
+  line-height: 1;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.page.dark .prose .stats .stat strong { color: var(--cream); }
+.prose .stats .stat span {
+  display: block;
+  margin-top: 1.5mm;
+  font-size: 8.5pt;
+  line-height: 1.35;
+  letter-spacing: 0.04em;
+  color: var(--mute);
+}
+.page.dark .prose .stats .stat span { color: rgba(244, 238, 222, 0.7); }
+
+/* Page progress — thin amber bar above the footer rule. */
+.progress {
+  margin-top: auto;
+  height: 1.2pt;
+  background: var(--hairline);
+  border-radius: 1pt;
+  overflow: hidden;
+}
+.page.dark .progress { background: var(--hairline-on-dark); }
+.progress span { display: block; height: 100%; background: var(--amber); }
+.progress + .chrome-bot { margin-top: 0; padding-top: 2.5mm; border-top: none; }
+
+/* ==== Page templates ==== */
+
+/* COVER */
+.page-cover { justify-content: space-between; }
+.page-cover .cover-motif {
+  position: absolute;
+  top: 12mm;
+  right: 14mm;
+  width: 58mm;
+  height: auto;
+}
+.page-cover .cover-kicker {
+  font-size: 9pt;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+.page-cover .cover-issue {
+  font-size: 8pt;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(244, 238, 222, 0.55);
+  margin-top: 4mm;
+}
+.page-cover .cover-title {
+  margin-top: auto;
+  margin-bottom: 0;
+}
+.page-cover .cover-sub {
+  margin-top: 6mm;
+  font-family: 'Fraunces', serif;
+  font-size: 14pt;
+  font-style: italic;
+  color: rgba(244, 238, 222, 0.85);
+  max-width: 150mm;
+}
+.page-cover .cover-byline {
+  margin-top: 12mm;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 9pt;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(244, 238, 222, 0.7);
+  border-top: 0.5pt solid var(--hairline-on-dark);
+  padding-top: 5mm;
+}
+.page-cover .cover-byline strong { color: var(--cream); font-weight: 500; }
+
+/* TOC */
+.page-toc .toc-kicker { margin-bottom: 12mm; }
+.page-toc .toc-title { margin-bottom: 10mm; }
+.toc-list { list-style: none; padding: 0; margin: 0; }
+.toc-list li {
+  display: flex;
+  align-items: baseline;
+  padding: 3.5mm 0;
+  border-bottom: 0.4pt dotted var(--hairline);
+}
+.toc-list .toc-num {
+  font-family: 'Fraunces', serif;
+  font-size: 11pt;
+  color: var(--amber-deep);
+  width: 12mm;
+  font-variant-numeric: tabular-nums;
+}
+.toc-list .toc-title-cell {
+  flex: 1;
+  font-family: 'Fraunces', serif;
+  font-size: 14pt;
+  color: var(--ink);
+  padding-right: 6mm;
+}
+.toc-list .toc-title-cell small {
+  display: block;
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  font-size: 8.5pt;
+  line-height: 1.4;
+  color: var(--mute);
+  margin-top: 0.8mm;
+}
+.toc-list .toc-kind {
+  font-size: 8pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-right: 5mm;
+}
+.toc-list .toc-leader {
+  flex: 0 1 18mm;
+  border-bottom: 0.4pt dotted var(--hairline);
+  margin: 0 2mm;
+  transform: translateY(-1mm);
+}
+.toc-list .toc-page {
+  font-family: 'Fraunces', serif;
+  font-size: 11pt;
+  color: var(--amber-deep);
+  font-variant-numeric: tabular-nums;
+  min-width: 7mm;
+  text-align: right;
+}
+
+/* DEFINITION */
+.page-definition { justify-content: center; padding: 24mm 22mm; }
+.page-definition .def-kicker { margin-bottom: 8mm; }
+.page-definition .def-text {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 30pt;
+  line-height: 1.18;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+.page-definition .def-text .amber { color: var(--amber-deep); }
+
+/* PROBLEM */
+.page-problem .problem-kicker { margin-bottom: 4mm; }
+.page-problem .problem-title { margin-bottom: 10mm; }
+.page-problem .prose { max-width: 126mm; }
+.page-why .prose { max-width: 126mm; }
+
+/* Long cover titles step down a size so they never crowd the page. */
+.cover-title.long { font-size: 42pt; }
+
+/* BODY (with optional infographic slot) */
+.page-body .body-kicker { margin-bottom: 3mm; }
+.page-body .body-title { margin-bottom: 8mm; }
+.page-body .body-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6mm;
+}
+/* Portrait diagrams are taller than they are wide — set them BESIDE the prose
+   so they can't push the text and footer off the fixed 297mm page. */
+.page-body .body-grid.layout-portrait {
+  display: grid;
+  grid-template-columns: 84mm 1fr;
+  gap: 6mm;
+  align-items: start;
+}
+.infographic-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+/* The renderer's SVG brings its own paper card + border — no chrome needed
+   here. NO max-height: width fully determines height (landscape full-width =
+   ~107mm; portrait is width-bound by the 84mm grid column), and an absolute
+   mm cap would mis-bind in the upscaled PNG-screenshot pass (96dpi mm vs
+   150dpi px) and shrink the preview images while the PDF stays full-width. */
+.infographic-slot svg { width: 100%; height: auto; display: block; }
+
+/* Figure furniture around each diagram. The figure must claim the slot's full
+   width — a viewBox-only SVG has no intrinsic size and collapses to the
+   300x150 replaced-element default otherwise. */
+.fig { margin: 0; width: 100%; }
+.fig .fig-tag {
+  font-size: 7.5pt;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--amber-deep);
+  font-weight: 600;
+  margin-bottom: 1.5mm;
+  text-align: left;
+}
+.page.dark .fig .fig-tag { color: var(--amber); }
+.fig figcaption {
+  margin-top: 2mm;
+  font-size: 8.5pt;
+  line-height: 1.4;
+  color: var(--mute);
+  text-align: left;
+}
+.page.dark .fig figcaption { color: rgba(244, 238, 222, 0.65); }
+
+/* COMPARISON */
+.page-comparison .comp-kicker { margin-bottom: 3mm; }
+.page-comparison .comp-title { margin-bottom: 10mm; color: var(--ink); }
+.page-comparison .prose { max-width: 160mm; }
+
+/* STEP-BY-STEP */
+.page-step .step-kicker { margin-bottom: 3mm; }
+.page-step .step-title { margin-bottom: 10mm; }
+.page-step .prose ol li {
+  font-size: 11.5pt;
+  padding-left: 2mm;
+}
+.page-step .prose ol li strong {
+  display: block;
+  font-family: 'Fraunces', serif;
+  font-size: 13pt;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 1.5mm;
+}
+
+/* USE-CASES */
+.page-usecases .uc-kicker { margin-bottom: 3mm; }
+.page-usecases .uc-title { margin-bottom: 10mm; }
+.page-usecases .prose p strong:first-child {
+  font-family: 'Fraunces', serif;
+  font-size: 13pt;
+  color: var(--amber-deep);
+}
+
+/* WHY IT MATTERS */
+.page-why .why-kicker { margin-bottom: 3mm; }
+.page-why .why-title { margin-bottom: 12mm; }
+
+/* RECAP */
+.page-recap .recap-kicker { margin-bottom: 3mm; }
+.page-recap .recap-title { margin-bottom: 10mm; }
+.page-recap .prose ul {
+  list-style: none;
+  padding-left: 0;
+}
+.page-recap .prose ul li {
+  position: relative;
+  padding-left: 9mm;
+  font-size: 12pt;
+  line-height: 1.5;
+}
+.page-recap .prose ul li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6mm;
+  height: 6mm;
+  color: var(--amber-deep);
+  font-weight: 700;
+  font-family: 'Fraunces', serif;
+  font-size: 14pt;
+  line-height: 1;
+}
+
+/* COLOPHON */
+.page-colophon .col-kicker { margin-bottom: 6mm; color: var(--amber); }
+.page-colophon .col-title { margin-bottom: 10mm; }
+.page-colophon .author-bio {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-size: 13pt;
+  line-height: 1.45;
+  color: rgba(244, 238, 222, 0.9);
+  max-width: 150mm;
+  margin-bottom: 10mm;
+}
+.page-colophon .col-sources-title {
+  font-size: 8pt;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 4mm;
+}
+.page-colophon ol.col-sources {
+  list-style: decimal;
+  padding-left: 6mm;
+  font-size: 9pt;
+  color: rgba(244, 238, 222, 0.85);
+  margin: 0;
+}
+.page-colophon ol.col-sources li { margin-bottom: 2mm; line-height: 1.4; }
+.page-colophon ol.col-sources li::marker { color: var(--amber); }
+.page-colophon ol.col-sources a { color: rgba(244, 238, 222, 0.85); text-decoration: none; }
+.page-colophon .col-byline {
+  margin-top: auto;
+  font-size: 9pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(244, 238, 222, 0.65);
+  display: flex;
+  justify-content: space-between;
+  border-top: 0.5pt solid var(--hairline-on-dark);
+  padding-top: 5mm;
+}
