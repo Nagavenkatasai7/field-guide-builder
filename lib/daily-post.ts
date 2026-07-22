@@ -15,6 +15,9 @@
  *   7. ARTIFACT GATE — block a broken guide (draft errors / missing diagrams / tiny PDF)
  *   8. caption: deterministic guard, then LLM self-check (block on doubt)
  *   9. dry-run stops here (status 'dry_run')
+ *   9.5 approval mode stops here too (status 'awaiting_approval') — the owner
+ *       approves/skips via a single-use emailed link; the decide route then
+ *       runs steps 10-12 through publishRunToLinkedIn
  *  10. ensure a valid LinkedIn token (refresh or needs-reconnect)
  *  11. persist 'posting' BEFORE the post; createDocumentPost is NEVER retried;
  *      any failure there → 'needs_review' (may have posted — never auto-repost)
@@ -37,6 +40,7 @@ import { buildFallbackCaption } from "@/lib/caption-fallback";
 import { isDraftable } from "@/lib/prompts/draft";
 import { SELFCHECK_SYSTEM_PROMPT, buildSelfCheckPrompt } from "@/lib/prompts/selfcheck";
 import { sendAlert } from "@/lib/notify";
+import { appBaseUrl, mintApprovalToken } from "@/lib/approval";
 import type { PlanT } from "@/lib/plan-schema";
 import {
   claimRun,
@@ -158,6 +162,84 @@ export async function ensureValidToken(account: LinkedinAccountRow): Promise<{ t
   }
   if (expired) throw new LinkedInAuthError("LinkedIn token expired and no refresh token — reconnect required", 401);
   return { token: account.access_token, daysLeft };
+}
+
+/**
+ * The publish tail shared by runDailyPost and the approval decide route:
+ * account → token (refresh-if-needed) → document upload → 'posting' → post.
+ * Never throws; every outcome lands in the run row + an email, with the same
+ * semantics the inline code had: pre-post failures are 'failed' (retryable),
+ * the post call is NEVER retried, and a post-call failure is 'needs_review'
+ * (it may have published — we can't read back, r_member_social is gated).
+ * `caption` must already be guard-cleaned; escaping happens here.
+ */
+export async function publishRunToLinkedIn(input: {
+  runId: string;
+  topic: string;
+  caption: string;
+  planTitle: string;
+  pdf: Buffer;
+  pdfUrl?: string | null;
+}): Promise<RunSummary> {
+  const { runId, topic, caption, planTitle, pdf, pdfUrl } = input;
+  let stage = "linkedin-auth";
+  try {
+    const account = await getLinkedinAccount();
+    if (!account) {
+      const reason = "LinkedIn is not connected";
+      await updateRun(runId, { status: "failed", error: reason });
+      await sendAlert({ kind: "needs_reconnect", reason });
+      return { status: "failed", runId, error: reason };
+    }
+    const { token, daysLeft } = await ensureValidToken(account);
+    // Throttle: alert only at the 14/7/3-day marks (and anything <=3), not every day for a week.
+    if (daysLeft != null && (daysLeft <= 3 || daysLeft === 7 || daysLeft === 14)) {
+      await sendAlert({ kind: "token_expiring", daysLeft });
+    }
+
+    // Upload the document, then PERSIST 'posting' before the post call.
+    stage = "doc-upload";
+    const docUrn = await uploadDocument(token, account.member_urn, pdf);
+
+    await updateRun(runId, { status: "posting" });
+    // The post is the ONE non-idempotent step: no retry, and any failure here
+    // becomes 'needs_review' (the post MAY have gone through; we can't read it
+    // back because r_member_social is gated) — never auto-reposted.
+    try {
+      const commentary = escapeLittleText(caption);
+      // The media title renders on the live post and is raw model output — sanitize it too.
+      const post = await createDocumentPost(token, account.member_urn, commentary, docUrn, sanitizePostTitle(planTitle));
+      await updateRun(runId, {
+        status: "posted",
+        linkedin_post_urn: post.postUrn,
+        linkedin_post_url: post.postUrl,
+        posted_at: new Date().toISOString(),
+      });
+      await sendAlert({ kind: "posted", topic, postUrl: post.postUrl });
+      console.log(`[daily-post] posted ${runId} → ${post.postUrl}`);
+      return { status: "posted", runId, postUrl: post.postUrl, pdfUrl };
+    } catch (postErr) {
+      const detail = sanitizeError(postErr);
+      await updateRun(runId, { status: "needs_review", error: `post call failed (may have posted): ${detail}` });
+      await sendAlert({ kind: "needs_review", detail: `Topic: ${topic}. Error: ${detail}` });
+      return { status: "needs_review", runId, error: detail, pdfUrl };
+    }
+  } catch (err) {
+    // Pre-post failure (auth/doc-upload) — safely retryable.
+    const error = sanitizeError(err);
+    console.error(`[daily-post] failed at ${stage}: ${error}`);
+    if (err instanceof LinkedInAuthError) {
+      await sendAlert({ kind: "needs_reconnect", reason: error });
+    } else {
+      await sendAlert({ kind: "failed", topic: topic || undefined, stage, error });
+    }
+    try {
+      await updateRun(runId, { status: "failed", error: `${stage}: ${error}` });
+    } catch (dbErr) {
+      console.error(`[daily-post] could not persist failure (alert already sent): ${sanitizeError(dbErr)}`);
+    }
+    return { status: "failed", runId, error };
+  }
 }
 
 export async function runDailyPost(
@@ -363,48 +445,42 @@ export async function runDailyPost(
       return { status: "dry_run", runId, pdfUrl };
     }
 
-    // 10. LinkedIn token.
-    stage = "linkedin-auth";
-    const account = await getLinkedinAccount();
-    if (!account) {
-      const reason = "LinkedIn is not connected";
-      await updateRun(runId, { status: "failed", error: reason });
-      await sendAlert({ kind: "needs_reconnect", reason });
-      return { status: "failed", runId, error: reason };
-    }
-    const { token, daysLeft } = await ensureValidToken(account);
-    // Throttle: alert only at the 14/7/3-day marks (and anything <=3), not every day for a week.
-    if (daysLeft != null && (daysLeft <= 3 || daysLeft === 7 || daysLeft === 14)) {
-      await sendAlert({ kind: "token_expiring", daysLeft });
-    }
-
-    // 11. Upload the document, then PERSIST 'posting' before the post call.
-    stage = "doc-upload";
-    const docUrn = await uploadDocument(token, account.member_urn, fg.pdf);
-
-    await updateRun(runId, { status: "posting" });
-    // The post is the ONE non-idempotent step: no retry, and any failure here
-    // becomes 'needs_review' (the post MAY have gone through; we can't read it
-    // back because r_member_social is gated) — never auto-reposted.
-    try {
-      const commentary = escapeLittleText(guard.clean);
-      // The media title renders on the live post and is raw model output — sanitize it too.
-      const post = await createDocumentPost(token, account.member_urn, commentary, docUrn, sanitizePostTitle(fg.plan.title));
+    // 9.5 Approval mode (M12): park the fully-gated run and hand the decision
+    // to the owner via a single-use emailed link — the decide route performs
+    // the actual post (through publishRunToLinkedIn). Human approval also
+    // supersedes the LLM self-check for any caption edits made on the page.
+    // Requires the blob artifact: a later invocation has no PDF Buffer, so a
+    // failed upload falls through the normal fail path (same-day retryable).
+    if (settings.approval_mode) {
+      stage = "approval";
+      if (!pdfUrl) {
+        throw new Error("approval mode needs the uploaded PDF artifact, but the blob upload failed");
+      }
+      const minted = await mintApprovalToken(runId);
       await updateRun(runId, {
-        status: "posted",
-        linkedin_post_urn: post.postUrn,
-        linkedin_post_url: post.postUrl,
-        posted_at: new Date().toISOString(),
+        status: "awaiting_approval",
+        approval_token_hash: minted.tokenHash,
+        approval_expires_at: minted.expiresAt,
       });
-      await sendAlert({ kind: "posted", topic, postUrl: post.postUrl });
-      console.log(`[daily-post] posted ${runId} → ${post.postUrl}`);
-      return { status: "posted", runId, postUrl: post.postUrl, pdfUrl };
-    } catch (postErr) {
-      const detail = sanitizeError(postErr);
-      await updateRun(runId, { status: "needs_review", error: `post call failed (may have posted): ${detail}` });
-      await sendAlert({ kind: "needs_review", detail: `Topic: ${topic}. Error: ${detail}` });
-      return { status: "needs_review", runId, error: detail, pdfUrl };
+      await sendAlert({
+        kind: "awaiting_approval",
+        topic,
+        approveUrl: `${appBaseUrl()}/approve?token=${encodeURIComponent(minted.token)}`,
+        pdfUrl,
+        expiresAt: minted.expiresAt,
+      });
+      return { status: "awaiting_approval", runId, pdfUrl };
     }
+
+    // 10-12. Publish (token → document upload → post) via the shared tail.
+    return await publishRunToLinkedIn({
+      runId,
+      topic,
+      caption: guard.clean,
+      planTitle: fg.plan.title,
+      pdf: fg.pdf,
+      pdfUrl,
+    });
   } catch (err) {
     // Pre-post failure (topic/generate/upload/auth/doc-upload) — safely retryable.
     const error = sanitizeError(err);

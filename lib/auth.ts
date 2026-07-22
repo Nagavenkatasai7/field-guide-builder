@@ -59,6 +59,16 @@ export async function verifySessionToken(token: string | undefined | null): Prom
   return timingSafeEqual(providedSig, expectedSig);
 }
 
+/**
+ * General-purpose HMAC-SHA256 (base64url) keyed by AUTH_COOKIE_SECRET, for
+ * signing capability tokens outside the session cookie (approval links).
+ * Callers MUST domain-separate their messages (e.g. "approve:v1:...") so a
+ * signature minted for one purpose can never verify for another.
+ */
+export async function hmacSign(message: string): Promise<string> {
+  return hmacSha256(message, getSecret());
+}
+
 export function checkPassword(submitted: string): boolean {
   const expected = process.env.AUTH_PASSWORD;
   if (!expected || expected.length < 8) return false;

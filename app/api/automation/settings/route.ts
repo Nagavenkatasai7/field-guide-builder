@@ -8,6 +8,7 @@ export type AutomationSettingsResponse = {
   storage: boolean;
   enabled: boolean;
   dryRun: boolean;
+  approvalMode: boolean;
   postHour: number;
   timezone: string;
   scheduleLabel: string;
@@ -18,6 +19,7 @@ function toResponse(s: AutomationSettings): AutomationSettingsResponse {
     storage: true,
     enabled: s.enabled,
     dryRun: s.dry_run,
+    approvalMode: s.approval_mode,
     postHour: s.post_hour,
     timezone: s.timezone,
     scheduleLabel: `~${s.post_hour}:00 ${s.timezone.replace("_", " ")}, daily (auto-picks a trending AI/ML topic)`,
@@ -26,7 +28,7 @@ function toResponse(s: AutomationSettings): AutomationSettingsResponse {
 
 export async function GET() {
   if (!storageEnabled()) {
-    return NextResponse.json({ storage: false, enabled: false, dryRun: true, postHour: 9, timezone: "America/New_York", scheduleLabel: "storage not configured" } satisfies AutomationSettingsResponse);
+    return NextResponse.json({ storage: false, enabled: false, dryRun: true, approvalMode: false, postHour: 9, timezone: "America/New_York", scheduleLabel: "storage not configured" } satisfies AutomationSettingsResponse);
   }
   return NextResponse.json(toResponse(await getAutomationSettings()));
 }
@@ -34,6 +36,7 @@ export async function GET() {
 const Body = z.object({
   enabled: z.boolean().optional(),
   dryRun: z.boolean().optional(),
+  approvalMode: z.boolean().optional(),
   postHour: z.number().int().min(0).max(23).optional(),
   timezone: z.string().min(2).max(64).optional(),
 });
@@ -104,6 +107,7 @@ export async function POST(request: Request) {
   const updated = await updateAutomationSettings({
     enabled: parsed.data.enabled,
     dry_run: parsed.data.dryRun,
+    approval_mode: parsed.data.approvalMode,
     post_hour: parsed.data.postHour,
     timezone: parsed.data.timezone,
   });

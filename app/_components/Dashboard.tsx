@@ -19,13 +19,15 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "settings", label: "Settings" },
 ];
 
-const ACTIVE_STATUSES = new Set(["claimed", "generating", "generated", "uploading", "posting"]);
+const ACTIVE_STATUSES = new Set(["claimed", "generating", "generated", "uploading", "approved", "posting"]);
 
 const BADGE: Record<string, { label: string; cls: string }> = {
   claimed: { label: "Queued", cls: "bg-amber-100 text-amber-800" },
   generating: { label: "Generating", cls: "bg-amber-100 text-amber-800" },
   generated: { label: "Generated", cls: "bg-amber-100 text-amber-800" },
   uploading: { label: "Uploading", cls: "bg-amber-100 text-amber-800" },
+  awaiting_approval: { label: "Awaiting approval", cls: "bg-purple-100 text-purple-800" },
+  approved: { label: "Approved — posting", cls: "bg-amber-100 text-amber-800" },
   posting: { label: "Posting", cls: "bg-amber-100 text-amber-800" },
   posted: { label: "Posted", cls: "bg-green-100 text-green-800" },
   dry_run: { label: "Dry-run", cls: "bg-indigo-100 text-indigo-800" },
@@ -107,7 +109,7 @@ export default function Dashboard() {
     return () => window.clearInterval(id);
   }, [hasActive, load]);
 
-  async function toggle(field: "enabled" | "dryRun", value: boolean) {
+  async function toggle(field: "enabled" | "dryRun" | "approvalMode", value: boolean) {
     setBusyToggle(true);
     try {
       const res = await fetch("/api/automation/settings", {
@@ -230,6 +232,7 @@ function StatusStrip({ status, settings, runs }: { status: LinkedinStatus | null
   if (!connected) { text = "🔌 LinkedIn not connected"; }
   else if (!settings?.enabled) { text = "⏸ Paused — connected"; }
   else if (settings?.dryRun) { tone = "bg-indigo-50 text-indigo-900 border-indigo-200"; text = "🟡 Dry-run (generates, doesn't post)"; }
+  else if (settings?.approvalMode) { tone = "bg-purple-50 text-purple-900 border-purple-200"; text = "🟣 Live — posts wait for your approval"; }
   else { tone = "bg-green-50 text-green-900 border-green-200"; text = "🟢 Live — auto-posting"; }
 
   return (
@@ -272,7 +275,7 @@ function OverviewTab({
           <li className="flex justify-between gap-3"><span className="text-[var(--color-mute)]">LinkedIn</span><span>{connected && status?.connected ? `Connected — ${status.memberName}` : "Not connected"}</span></li>
           {daysLeft != null ? <li className="flex justify-between gap-3"><span className="text-[var(--color-mute)]">Token</span><span className={daysLeft <= 7 ? "text-amber-700" : ""}>{daysLeft <= 0 ? "Expired — reconnect" : `~${daysLeft} days left`}</span></li> : null}
           <li className="flex justify-between gap-3"><span className="text-[var(--color-mute)]">Schedule</span><span>{settings?.scheduleLabel.split(",")[0].replace("~", "~ ") ?? "—"}</span></li>
-          <li className="flex justify-between gap-3"><span className="text-[var(--color-mute)]">Mode</span><span>{!settings?.enabled ? "Paused" : settings?.dryRun ? "Dry-run" : "Live"}</span></li>
+          <li className="flex justify-between gap-3"><span className="text-[var(--color-mute)]">Mode</span><span>{!settings?.enabled ? "Paused" : settings?.dryRun ? "Dry-run" : settings?.approvalMode ? "Live (approval required)" : "Live"}</span></li>
         </ul>
         <div className="flex items-center gap-3 mt-4 flex-wrap">
           <button type="button" onClick={() => onRunNow(true)} disabled={busyRunNow} className="text-sm bg-[var(--color-ink)] text-[var(--color-cream)] px-3 py-1.5 rounded disabled:opacity-50">{busyRunNow ? "Running…" : "Run now (dry-run)"}</button>
@@ -379,6 +382,21 @@ function RunRow({ run, onChanged }: { run: AutomationRunWire; onChanged: () => v
     setBusy(true);
     try { await fetch(`/api/automation/runs/${run.id}/retry`, { method: "POST" }); } finally { setBusy(false); onChanged(); }
   }
+  async function openApproval() {
+    // Re-issues the single-use link (rotating the emailed one) and opens the
+    // approval page in a new tab — same flow as clicking the email. The
+    // server's URL is never opened verbatim: only its token is extracted and
+    // re-encoded onto the FIXED same-origin /approve path, so a tampered
+    // response can't redirect the browser anywhere else.
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/automation/runs/${run.id}/approval-link`, { method: "POST" });
+      const j = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      const approvalToken = j.url ? new URL(j.url, window.location.origin).searchParams.get("token") : null;
+      if (res.ok && approvalToken) window.open(`/approve?token=${encodeURIComponent(approvalToken)}`, "_blank", "noopener");
+      else window.alert(j.error || "Could not create an approval link");
+    } finally { setBusy(false); onChanged(); }
+  }
 
   return (
     <li className="bg-white rounded-lg border border-black/5 p-3 grid gap-1.5">
@@ -396,6 +414,7 @@ function RunRow({ run, onChanged }: { run: AutomationRunWire; onChanged: () => v
         {run.pdfUrl ? <a ref={pdfRef} target="_blank" rel="noreferrer" className="text-[var(--color-ink)] underline">PDF</a> : null}
         {run.linkedinPostUrl ? <a ref={liRef} target="_blank" rel="noreferrer" className="text-[var(--color-ink)] underline">View on LinkedIn ↗</a> : null}
         {run.caption ? <button type="button" onClick={() => setExpanded((v) => !v)} className="underline text-[var(--color-mute)]">{expanded ? "Hide caption" : "View caption"}</button> : null}
+        {run.status === "awaiting_approval" ? <button type="button" onClick={openApproval} disabled={busy} className="underline text-purple-700 font-medium disabled:opacity-50">Review &amp; approve</button> : null}
         {(run.status === "failed" || run.status === "blocked") ? <button type="button" onClick={retry} disabled={busy} className="underline text-amber-700 disabled:opacity-50">Retry</button> : null}
         {run.status === "posted" && run.linkedinPostUrl ? <button type="button" onClick={del} disabled={busy} className="underline text-red-700 disabled:opacity-50">Delete from LinkedIn</button> : null}
       </div>
@@ -431,7 +450,7 @@ function SettingsTab({
 }: {
   status: LinkedinStatus | null; settings: AutomationSettingsResponse | null; connected: boolean;
   busyToggle: boolean; busyRunNow: boolean;
-  onToggle: (f: "enabled" | "dryRun", v: boolean) => void; onRunNow: (dryRun: boolean) => void; onDisconnect: () => void;
+  onToggle: (f: "enabled" | "dryRun" | "approvalMode", v: boolean) => void; onRunNow: (dryRun: boolean) => void; onDisconnect: () => void;
 }) {
   const daysLeft = connected && status?.connected ? status.daysLeft : null;
   return (
@@ -464,6 +483,10 @@ function SettingsTab({
         <label className="flex items-center justify-between gap-3 text-sm">
           <span><span className="font-medium">Dry-run mode</span><span className="block text-xs text-[var(--color-mute)]">Generate daily but don’t post. Off = publish for real.</span></span>
           <input type="checkbox" checked={!!settings?.dryRun} disabled={busyToggle} onChange={(e) => onToggle("dryRun", e.target.checked)} className="w-5 h-5 accent-[var(--color-amber)]" />
+        </label>
+        <label className="flex items-center justify-between gap-3 text-sm">
+          <span><span className="font-medium">Approval mode</span><span className="block text-xs text-[var(--color-mute)]">Generate daily, but hold each post until you approve it from an email link — and add your own take before it goes out. Unapproved posts expire after 24h without posting.</span></span>
+          <input type="checkbox" checked={!!settings?.approvalMode} disabled={busyToggle} onChange={(e) => onToggle("approvalMode", e.target.checked)} className="w-5 h-5 accent-[var(--color-amber)]" />
         </label>
         <div className="border-t border-black/5 pt-3 flex items-center gap-3 flex-wrap">
           <button type="button" onClick={() => onRunNow(true)} disabled={busyRunNow} className="text-sm bg-[var(--color-ink)] text-[var(--color-cream)] px-3 py-1.5 rounded disabled:opacity-50">{busyRunNow ? "Running…" : "Run now (dry-run)"}</button>

@@ -93,19 +93,27 @@ async function ensureSchema(): Promise<void> {
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS scheduled_runs_cron_date ON scheduled_runs (run_date) WHERE trigger = 'cron'`;
   // Same-day auto-retry support (added post-M10; idempotent for existing tables).
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS attempt int NOT NULL DEFAULT 1`;
+  // Approval mode (M12). approval_token_hash stores ONLY the HMAC of the
+  // emailed capability token (never the token itself); personal_take is the
+  // owner's voice-injection text captured on the approval page.
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS approval_token_hash text`;
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS approval_expires_at timestamptz`;
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS personal_take text`;
 
   // Singleton automation settings. Defaults are SAFE: automation OFF and
   // dry_run ON until the user explicitly enables it (default-off rollout).
   await sql`
     CREATE TABLE IF NOT EXISTS automation_settings (
-      id          int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-      enabled     boolean NOT NULL DEFAULT false,
-      dry_run     boolean NOT NULL DEFAULT true,
-      post_hour   int NOT NULL DEFAULT 12,
-      timezone    text NOT NULL DEFAULT 'America/New_York',
-      updated_at  timestamptz NOT NULL DEFAULT now()
+      id             int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      enabled        boolean NOT NULL DEFAULT false,
+      dry_run        boolean NOT NULL DEFAULT true,
+      approval_mode  boolean NOT NULL DEFAULT false,
+      post_hour      int NOT NULL DEFAULT 12,
+      timezone       text NOT NULL DEFAULT 'America/New_York',
+      updated_at     timestamptz NOT NULL DEFAULT now()
     )
   `;
+  await sql`ALTER TABLE automation_settings ADD COLUMN IF NOT EXISTS approval_mode boolean NOT NULL DEFAULT false`;
 
   // Log of out-of-band alerts (emails) so they're visible in the dashboard.
   await sql`
@@ -211,6 +219,8 @@ export type ScheduledRunStatus =
   | "blocked"
   | "uploading"
   | "dry_run"
+  | "awaiting_approval" // approval mode: generated + gated, parked for the owner's decision
+  | "approved"          // decide route claimed it; publishing is in flight (pre-post)
   | "posting"
   | "posted"
   | "failed"
@@ -240,11 +250,17 @@ export type ScheduledRunRow = {
   error: string | null;
   posted_at: string | null;
   timings_json: Record<string, number> | null;
+  // approval_token_hash is an HMAC (useless without AUTH_COOKIE_SECRET), but
+  // still: never map it into a wire type. personal_take is owner-authored.
+  approval_token_hash: string | null;
+  approval_expires_at: string | null;
+  personal_take: string | null;
 };
 
 export type AutomationSettings = {
   enabled: boolean;
   dry_run: boolean;
+  approval_mode: boolean;
   post_hour: number;
   timezone: string;
   updated_at: string | null;
@@ -340,7 +356,8 @@ export async function clearLinkedinAccount(): Promise<void> {
 const SCHEDULED_RUN_COLUMNS = `
   id, created_at::text, updated_at::text, run_date::text, trigger, status, dry_run,
   topic, angle, plan_title, caption, pdf_url, zip_url, page_count, source_count,
-  linkedin_post_urn, linkedin_post_url, api_version, error, posted_at::text, timings_json
+  linkedin_post_urn, linkedin_post_url, api_version, error, posted_at::text, timings_json,
+  approval_token_hash, approval_expires_at::text, personal_take
 `;
 
 /**
@@ -399,6 +416,7 @@ const SCHEDULED_RUN_UPDATABLE = [
   "status", "topic", "angle", "plan_title", "caption", "pdf_url", "zip_url",
   "page_count", "source_count", "linkedin_post_urn", "linkedin_post_url",
   "api_version", "error", "posted_at", "timings_json",
+  "approval_token_hash", "approval_expires_at", "personal_take",
 ] as const;
 
 export type ScheduledRunPatch = Partial<Pick<ScheduledRunRow, (typeof SCHEDULED_RUN_UPDATABLE)[number]>>;
@@ -465,29 +483,85 @@ export async function recentTopics(n = 30): Promise<string[]> {
 
 /**
  * Reaps runs left non-terminal by a killed invocation (Vercel maxDuration is
- * 300s, so anything older than 15 min is certainly dead). Pre-post stages are
+ * 300s, so anything idle longer than 15 min is certainly dead). Pre-post
+ * stages ('approved' included — the decide route dies before 'posting') are
  * safely retryable → 'failed'. A stale 'posting' MIGHT have reached LinkedIn
  * (we can't read it back — r_member_social is gated), so it becomes
  * 'needs_review' and is NEVER auto-reposted. Returns ids set to needs_review
  * so the caller can alert.
+ *
+ * Staleness is measured on updated_at, NOT created_at: approval mode parks a
+ * run for hours, so an approve that flips it to 'approved'/'posting' at 6pm
+ * must not be reaped by a concurrent cron fire just because the row was
+ * CREATED at noon. Every legitimate transition bumps updated_at.
  */
 export async function reapStaleRuns(): Promise<{ failed: string[]; needsReview: string[] }> {
   await ensureSchema();
   const failedRes = await sql<{ id: string }>`
     UPDATE scheduled_runs
     SET status = 'failed', error = COALESCE(error, 'reaped: invocation died before completing (pre-post stage)'), updated_at = now()
-    WHERE status IN ('claimed', 'generating', 'generated', 'uploading')
-      AND created_at < now() - interval '15 minutes'
+    WHERE status IN ('claimed', 'generating', 'generated', 'uploading', 'approved')
+      AND updated_at < now() - interval '15 minutes'
     RETURNING id
   `;
   const res = await sql<{ id: string }>`
     UPDATE scheduled_runs
     SET status = 'needs_review', error = COALESCE(error, 'reaped: died while posting — may have posted to LinkedIn; manual check required'), updated_at = now()
     WHERE status = 'posting'
-      AND created_at < now() - interval '15 minutes'
+      AND updated_at < now() - interval '15 minutes'
     RETURNING id
   `;
+  // Approval windows that lapsed with no decision → quiet 'skipped'. Nothing
+  // was posted; the run stays reviewable in the dashboard. The hash is cleared
+  // so an old emailed link can never act on the (now terminal) row.
+  await sql`
+    UPDATE scheduled_runs
+    SET status = 'skipped', error = 'approval window expired — nothing was posted', approval_token_hash = NULL, updated_at = now()
+    WHERE status = 'awaiting_approval'
+      AND approval_expires_at IS NOT NULL AND approval_expires_at < now()
+  `;
   return { failed: failedRes.rows.map((r) => r.id), needsReview: res.rows.map((r) => r.id) };
+}
+
+/**
+ * Atomically claims an awaiting_approval run for a decision. All guards live
+ * in the WHERE clause so a double-click / two-device race resolves to exactly
+ * one winner: status must still be awaiting_approval, the presented token's
+ * hash must match the stored one (binds the decision to the newest issued
+ * link), and the window must not have lapsed. Clearing the hash makes the
+ * token single-use. Returns false when any guard fails (caller → 409).
+ */
+export async function claimApprovalDecision(input: {
+  id: string;
+  tokenHash: string;
+  decision: "approved" | "skipped";
+  finalCaption?: string;
+  personalTake?: string | null;
+}): Promise<boolean> {
+  await ensureSchema();
+  if (input.decision === "approved") {
+    const res = await sql`
+      UPDATE scheduled_runs
+      SET status = 'approved', caption = ${input.finalCaption ?? null},
+          personal_take = ${input.personalTake ?? null},
+          approval_token_hash = NULL, updated_at = now()
+      WHERE id = ${input.id} AND status = 'awaiting_approval'
+        AND approval_token_hash = ${input.tokenHash}
+        AND (approval_expires_at IS NULL OR approval_expires_at > now())
+      RETURNING id
+    `;
+    return res.rowCount === 1;
+  }
+  const res = await sql`
+    UPDATE scheduled_runs
+    SET status = 'skipped', error = 'skipped by owner from the approval page',
+        approval_token_hash = NULL, updated_at = now()
+    WHERE id = ${input.id} AND status = 'awaiting_approval'
+      AND approval_token_hash = ${input.tokenHash}
+      AND (approval_expires_at IS NULL OR approval_expires_at > now())
+    RETURNING id
+  `;
+  return res.rowCount === 1;
 }
 
 /** Today's cron run row (if any) — used by the off-hour dead-man's-switch. */
@@ -504,13 +578,13 @@ export async function getCronRunForDate(runDate: string): Promise<ScheduledRunRo
 
 export async function getAutomationSettings(): Promise<AutomationSettings> {
   await ensureSchema();
-  const res = await sql<{ enabled: boolean; dry_run: boolean; post_hour: number; timezone: string; updated_at: string }>`
-    SELECT enabled, dry_run, post_hour, timezone, updated_at::text FROM automation_settings WHERE id = 1
+  const res = await sql<{ enabled: boolean; dry_run: boolean; approval_mode: boolean; post_hour: number; timezone: string; updated_at: string }>`
+    SELECT enabled, dry_run, approval_mode, post_hour, timezone, updated_at::text FROM automation_settings WHERE id = 1
   `;
   const row = res.rows[0];
   if (!row) {
     // Safe defaults before the user ever opens settings: OFF + dry-run ON.
-    return { enabled: false, dry_run: true, post_hour: 12, timezone: "America/New_York", updated_at: null };
+    return { enabled: false, dry_run: true, approval_mode: false, post_hour: 12, timezone: "America/New_York", updated_at: null };
   }
   return row;
 }
@@ -556,26 +630,29 @@ export async function listAlerts(limit = 30): Promise<AlertRow[]> {
 export async function updateAutomationSettings(patch: {
   enabled?: boolean;
   dry_run?: boolean;
+  approval_mode?: boolean;
   post_hour?: number;
   timezone?: string;
 }): Promise<AutomationSettings> {
   await ensureSchema();
-  const res = await sql<{ enabled: boolean; dry_run: boolean; post_hour: number; timezone: string; updated_at: string }>`
-    INSERT INTO automation_settings (id, enabled, dry_run, post_hour, timezone)
+  const res = await sql<{ enabled: boolean; dry_run: boolean; approval_mode: boolean; post_hour: number; timezone: string; updated_at: string }>`
+    INSERT INTO automation_settings (id, enabled, dry_run, approval_mode, post_hour, timezone)
     VALUES (
       1,
       COALESCE(${patch.enabled ?? null}, false),
       COALESCE(${patch.dry_run ?? null}, true),
+      COALESCE(${patch.approval_mode ?? null}, false),
       COALESCE(${patch.post_hour ?? null}, 12),
       COALESCE(${patch.timezone ?? null}, 'America/New_York')
     )
     ON CONFLICT (id) DO UPDATE SET
       enabled = COALESCE(${patch.enabled ?? null}, automation_settings.enabled),
       dry_run = COALESCE(${patch.dry_run ?? null}, automation_settings.dry_run),
+      approval_mode = COALESCE(${patch.approval_mode ?? null}, automation_settings.approval_mode),
       post_hour = COALESCE(${patch.post_hour ?? null}, automation_settings.post_hour),
       timezone = COALESCE(${patch.timezone ?? null}, automation_settings.timezone),
       updated_at = now()
-    RETURNING enabled, dry_run, post_hour, timezone, updated_at::text
+    RETURNING enabled, dry_run, approval_mode, post_hour, timezone, updated_at::text
   `;
   return res.rows[0];
 }

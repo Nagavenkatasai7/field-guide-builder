@@ -16,6 +16,7 @@ import { recordAlert, storageEnabled } from "@/lib/storage";
 export type AlertEvent =
   | { kind: "posted"; topic: string; postUrl: string }
   | { kind: "dry_run"; topic: string; pdfUrl?: string | null }
+  | { kind: "awaiting_approval"; topic: string; approveUrl: string; pdfUrl?: string | null; expiresAt: string }
   | { kind: "blocked"; topic: string; reason: string }
   | { kind: "failed"; topic?: string; stage: string; error: string }
   | { kind: "needs_reconnect"; reason: string }
@@ -28,6 +29,13 @@ function render(event: AlertEvent): { subject: string; text: string } {
       return { subject: `✅ Posted to LinkedIn: ${event.topic}`, text: `Your daily Field Guide was posted.\n\nTopic: ${event.topic}\nLink: ${event.postUrl}\n\nIf it's off, open the app and click "Delete from LinkedIn" on this run.` };
     case "dry_run":
       return { subject: `🧪 Dry-run ready: ${event.topic}`, text: `A dry-run generated a Field Guide WITHOUT posting.\n\nTopic: ${event.topic}\n${event.pdfUrl ? `PDF: ${event.pdfUrl}\n` : ""}\nReview it in the app, then enable automation to go live.` };
+    case "awaiting_approval": {
+      const expires = new Date(event.expiresAt).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      return {
+        subject: `🟡 Approve today's post: ${event.topic}`,
+        text: `Today's Field Guide is generated and passed every safety gate — it is waiting for YOUR go-ahead (nothing has been posted).\n\nTopic: ${event.topic}\n${event.pdfUrl ? `PDF preview: ${event.pdfUrl}\n` : ""}\nReview, add your personal take, and approve or skip here:\n${event.approveUrl}\n\nThe link is single-use and expires ${expires} ET. If it lapses, the day is skipped — nothing posts without you.`,
+      };
+    }
     case "blocked":
       return { subject: `⚠️ Auto-post blocked (nothing posted): ${event.topic}`, text: `The safety check blocked today's post — nothing was published.\n\nTopic: ${event.topic}\nReason: ${event.reason}\n\nThis is the safe outcome. Review in the app.` };
     case "failed":
