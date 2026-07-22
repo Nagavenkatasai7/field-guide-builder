@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listRuns, storageEnabled, type ScheduledRunRow, type ScheduledRunStatus } from "@/lib/storage";
+import { listRuns, storageEnabled, type RepurposeBundle, type ScheduledRunRow, type ScheduledRunStatus } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -22,6 +22,7 @@ export type AutomationRunWire = {
   linkedinPostUrl: string | null;
   error: string | null;
   postedAt: string | null;
+  repurpose: RepurposeBundle | null;
 };
 
 export type AutomationRunsResponse = { enabled: boolean; runs: AutomationRunWire[] };
@@ -44,6 +45,7 @@ function toWire(r: ScheduledRunRow): AutomationRunWire {
     linkedinPostUrl: r.linkedin_post_url,
     error: r.error,
     postedAt: r.posted_at,
+    repurpose: r.repurpose_json,
   };
 }
 

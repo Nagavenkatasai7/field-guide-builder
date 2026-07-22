@@ -13,7 +13,9 @@ const PUBLIC_API_PREFIXES = ["/api/auth/login"];
 // self-authenticate with the signed capability token. Using a prefix here
 // would also un-gate sibling/typo'd paths (/api/cron/daily-postX) and the
 // manual run-now trigger — a public auto-post-to-LinkedIn hole. Keep it exact.
-const PUBLIC_API_EXACT = new Set(["/api/cron/daily-post", "/api/approval/preview", "/api/approval/decide"]);
+// /api/feed + /api/feed/rss are read-only listings of ALREADY-PUBLIC posts
+// (everything in them is live on LinkedIn) for portfolio/newsletter ingestion.
+const PUBLIC_API_EXACT = new Set(["/api/cron/daily-post", "/api/approval/preview", "/api/approval/decide", "/api/feed", "/api/feed/rss"]);
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

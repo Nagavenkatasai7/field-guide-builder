@@ -363,6 +363,9 @@ function PostsTab({ runs, onChanged }: { runs: AutomationRunWire[]; onChanged: (
 function RunRow({ run, onChanged }: { run: AutomationRunWire; onChanged: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [repo, setRepo] = useState(run.repurpose);
+  const [showRepo, setShowRepo] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
   const pdfRef = useRef<HTMLAnchorElement>(null);
   const liRef = useRef<HTMLAnchorElement>(null);
   const badge = BADGE[run.status] ?? { label: run.status, cls: "bg-gray-100 text-gray-700" };
@@ -384,6 +387,17 @@ function RunRow({ run, onChanged }: { run: AutomationRunWire; onChanged: () => v
   async function retry() {
     setBusy(true);
     try { await fetch(`/api/automation/runs/${run.id}/retry`, { method: "POST" }); } finally { setBusy(false); onChanged(); }
+  }
+  async function repurpose() {
+    if (repo) { setShowRepo((v) => !v); return; }
+    setBusy(true);
+    setRepoError(null);
+    try {
+      const res = await fetch(`/api/automation/runs/${run.id}/repurpose`, { method: "POST" });
+      const j = (await res.json().catch(() => ({}))) as { repurpose?: AutomationRunWire["repurpose"]; error?: string };
+      if (res.ok && j.repurpose) { setRepo(j.repurpose); setShowRepo(true); }
+      else setRepoError(j.error || "Repurpose failed — try again.");
+    } finally { setBusy(false); }
   }
   async function openApproval() {
     // Re-issues the single-use link (rotating the emailed one) and opens the
@@ -419,10 +433,46 @@ function RunRow({ run, onChanged }: { run: AutomationRunWire; onChanged: () => v
         {run.caption ? <button type="button" onClick={() => setExpanded((v) => !v)} className="underline text-[var(--color-mute)]">{expanded ? "Hide caption" : "View caption"}</button> : null}
         {run.status === "awaiting_approval" ? <button type="button" onClick={openApproval} disabled={busy} className="underline text-purple-700 font-medium disabled:opacity-50">Review &amp; approve</button> : null}
         {(run.status === "failed" || run.status === "blocked") ? <button type="button" onClick={retry} disabled={busy} className="underline text-amber-700 disabled:opacity-50">Retry</button> : null}
+        {run.status === "posted" ? <button type="button" onClick={repurpose} disabled={busy} className="underline text-emerald-700 disabled:opacity-50">{repo ? (showRepo ? "Hide repurpose" : "Show repurpose") : busy ? "Repurposing…" : "Repurpose"}</button> : null}
         {run.status === "posted" && run.linkedinPostUrl ? <button type="button" onClick={del} disabled={busy} className="underline text-red-700 disabled:opacity-50">Delete from LinkedIn</button> : null}
       </div>
+      {repoError ? <p className="text-xs text-red-700">{repoError}</p> : null}
       {expanded && run.caption ? <pre className="text-xs whitespace-pre-wrap bg-[var(--color-cream)] rounded p-3 mt-1 font-sans">{run.caption}</pre> : null}
+      {showRepo && repo ? <RepurposePanel bundle={repo} /> : null}
     </li>
+  );
+}
+
+function CopyBlock({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      window.alert("Clipboard unavailable — select and copy the text manually.");
+    }
+  }
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] uppercase tracking-wider text-[var(--color-mute)]">{label}</p>
+        <button type="button" onClick={() => void copy()} className="text-[11px] bg-[var(--color-ink)] text-[var(--color-cream)] px-2 py-1 rounded">{copied ? "Copied ✓" : "Copy"}</button>
+      </div>
+      <pre className="text-xs whitespace-pre-wrap bg-[var(--color-cream)] rounded p-3 font-sans max-h-64 overflow-y-auto">{text}</pre>
+    </div>
+  );
+}
+
+function RepurposePanel({ bundle }: { bundle: NonNullable<AutomationRunWire["repurpose"]> }) {
+  return (
+    <div className="grid gap-4 mt-2 border-t border-black/5 pt-3">
+      <CopyBlock label="Blog post (markdown — paste into the portfolio)" text={bundle.blog_markdown} />
+      <CopyBlock label="X / Twitter thread (one tweet per line break)" text={bundle.x_thread.join("\n\n---\n\n")} />
+      <CopyBlock label="Newsletter section" text={bundle.newsletter_markdown} />
+      <p className="text-[11px] text-[var(--color-mute)]">Links carry UTM tags (utm_source=field-guide) so this traffic is visible in your site analytics. The public feeds at /api/feed and /api/feed/rss serve the same content for automated ingestion.</p>
+    </div>
   );
 }
 

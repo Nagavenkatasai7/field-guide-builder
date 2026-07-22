@@ -99,6 +99,9 @@ async function ensureSchema(): Promise<void> {
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS approval_token_hash text`;
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS approval_expires_at timestamptz`;
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS personal_take text`;
+  // Repurposing engine (M14): blog/thread/newsletter derivatives of a posted
+  // guide, generated on demand and stored as one JSON blob.
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS repurpose_json jsonb`;
 
   // Singleton automation settings. Defaults are SAFE: automation OFF and
   // dry_run ON until the user explicitly enables it (default-off rollout).
@@ -273,6 +276,15 @@ export type ScheduledRunRow = {
   approval_token_hash: string | null;
   approval_expires_at: string | null;
   personal_take: string | null;
+  repurpose_json: RepurposeBundle | null;
+};
+
+/** Derivatives of a posted guide for owned channels (blog, X, newsletter). */
+export type RepurposeBundle = {
+  blog_markdown: string;
+  x_thread: string[];
+  newsletter_markdown: string;
+  generated_at: string;
 };
 
 export type AutomationSettings = {
@@ -375,7 +387,7 @@ const SCHEDULED_RUN_COLUMNS = `
   id, created_at::text, updated_at::text, run_date::text, trigger, status, dry_run,
   topic, angle, plan_title, caption, pdf_url, zip_url, page_count, source_count,
   linkedin_post_urn, linkedin_post_url, api_version, error, posted_at::text, timings_json,
-  approval_token_hash, approval_expires_at::text, personal_take
+  approval_token_hash, approval_expires_at::text, personal_take, repurpose_json
 `;
 
 /**
@@ -434,7 +446,7 @@ const SCHEDULED_RUN_UPDATABLE = [
   "status", "topic", "angle", "plan_title", "caption", "pdf_url", "zip_url",
   "page_count", "source_count", "linkedin_post_urn", "linkedin_post_url",
   "api_version", "error", "posted_at", "timings_json",
-  "approval_token_hash", "approval_expires_at", "personal_take",
+  "approval_token_hash", "approval_expires_at", "personal_take", "repurpose_json",
 ] as const;
 
 export type ScheduledRunPatch = Partial<Pick<ScheduledRunRow, (typeof SCHEDULED_RUN_UPDATABLE)[number]>>;
@@ -454,8 +466,8 @@ export async function updateRun(id: string, patch: ScheduledRunPatch): Promise<v
   for (const col of SCHEDULED_RUN_UPDATABLE) {
     const value = (patch as Record<string, unknown>)[col];
     if (!(col in patch) || value === undefined) continue;
-    if (col === "timings_json") {
-      sets.push(`timings_json = $${n}::jsonb`);
+    if (col === "timings_json" || col === "repurpose_json") {
+      sets.push(`"${col}" = $${n}::jsonb`);
       params.push(value == null ? null : JSON.stringify(value));
     } else {
       sets.push(`"${col}" = $${n}`);
@@ -473,6 +485,18 @@ export async function listRuns(limit = 20): Promise<ScheduledRunRow[]> {
   await ensureSchema();
   const res = await db.query<ScheduledRunRow>(
     `SELECT ${SCHEDULED_RUN_COLUMNS} FROM scheduled_runs ORDER BY created_at DESC LIMIT $1`,
+    [limit],
+  );
+  return res.rows;
+}
+
+/** Posted runs only — the public feed's source. Everything here is already
+ * public by construction (it's live on LinkedIn). */
+export async function listPostedRuns(limit = 50): Promise<ScheduledRunRow[]> {
+  await ensureSchema();
+  const res = await db.query<ScheduledRunRow>(
+    `SELECT ${SCHEDULED_RUN_COLUMNS} FROM scheduled_runs
+     WHERE status = 'posted' ORDER BY posted_at DESC NULLS LAST LIMIT $1`,
     [limit],
   );
   return res.rows;
