@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listRuns, storageEnabled, type RepurposeBundle, type ScheduledRunRow, type ScheduledRunStatus } from "@/lib/storage";
+import { listRuns, storageEnabled, type PostFormat, type RepurposeBundle, type ScheduledRunRow, type ScheduledRunStatus } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -23,6 +23,7 @@ export type AutomationRunWire = {
   error: string | null;
   postedAt: string | null;
   repurpose: RepurposeBundle | null;
+  format: PostFormat;
 };
 
 export type AutomationRunsResponse = { enabled: boolean; runs: AutomationRunWire[] };
@@ -46,6 +47,7 @@ function toWire(r: ScheduledRunRow): AutomationRunWire {
     error: r.error,
     postedAt: r.posted_at,
     repurpose: r.repurpose_json,
+    format: r.post_format,
   };
 }
 

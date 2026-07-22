@@ -28,9 +28,12 @@
 import {
   LinkedInAuthError,
   createDocumentPost,
+  createImagePost,
+  createTextPost,
   getApiVersion,
   refreshAccessToken,
   uploadDocument,
+  uploadImage,
 } from "@/lib/linkedin-api";
 import { chat } from "@/lib/llm";
 import { generateFieldGuide, type FieldGuideResult } from "@/lib/pipeline";
@@ -49,13 +52,16 @@ import {
   reapStaleRuns,
   recentTopics,
   reclaimRetryableCronRun,
+  parseDayFormats,
   recordGeneration,
   slugify,
   storageEnabled,
   updateLinkedinTokens,
   updateRun,
   uploadBlob,
+  type DayFormat,
   type LinkedinAccountRow,
+  type PostFormat,
 } from "@/lib/storage";
 
 export type Trigger = "cron" | "manual";
@@ -85,6 +91,14 @@ export function hourInTimezone(tz = "America/New_York"): number {
   const h = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date());
   const n = parseInt(h, 10);
   return n === 24 ? 0 : n; // some ICU builds render midnight as "24"
+}
+
+/** Current weekday (0=Sunday..6=Saturday) in the given timezone — indexes
+ * into the day_formats plan (M15). */
+export function weekdayInTimezone(tz = "America/New_York"): number {
+  const wd = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(new Date());
+  const idx = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(wd);
+  return idx >= 0 ? idx : new Date().getDay();
 }
 
 function sanitizeError(err: unknown): string {
@@ -178,10 +192,13 @@ export async function publishRunToLinkedIn(input: {
   topic: string;
   caption: string;
   planTitle: string;
-  pdf: Buffer;
+  /** What shape to publish as (M15). Media buffers are required per format. */
+  format: PostFormat;
+  pdf?: Buffer;
+  image?: Buffer;
   pdfUrl?: string | null;
 }): Promise<RunSummary> {
-  const { runId, topic, caption, planTitle, pdf, pdfUrl } = input;
+  const { runId, topic, caption, planTitle, format, pdf, image, pdfUrl } = input;
   let stage = "linkedin-auth";
   try {
     const account = await getLinkedinAccount();
@@ -197,9 +214,17 @@ export async function publishRunToLinkedIn(input: {
       await sendAlert({ kind: "token_expiring", daysLeft });
     }
 
-    // Upload the document, then PERSIST 'posting' before the post call.
-    stage = "doc-upload";
-    const docUrn = await uploadDocument(token, account.member_urn, pdf);
+    // Upload the media (still a safely-retryable pre-post stage), then
+    // PERSIST 'posting' before the post call. Text posts have no media.
+    stage = "media-upload";
+    let mediaUrn: string | null = null;
+    if (format === "document") {
+      if (!pdf) throw new Error("document post requires the PDF buffer");
+      mediaUrn = await uploadDocument(token, account.member_urn, pdf);
+    } else if (format === "image") {
+      if (!image) throw new Error("image post requires the image buffer");
+      mediaUrn = await uploadImage(token, account.member_urn, image);
+    }
 
     await updateRun(runId, { status: "posting" });
     // The post is the ONE non-idempotent step: no retry, and any failure here
@@ -208,7 +233,11 @@ export async function publishRunToLinkedIn(input: {
     try {
       const commentary = escapeLittleText(caption);
       // The media title renders on the live post and is raw model output — sanitize it too.
-      const post = await createDocumentPost(token, account.member_urn, commentary, docUrn, sanitizePostTitle(planTitle));
+      const title = sanitizePostTitle(planTitle);
+      const post =
+        format === "document" ? await createDocumentPost(token, account.member_urn, commentary, mediaUrn as string, title)
+        : format === "image" ? await createImagePost(token, account.member_urn, commentary, mediaUrn as string, title)
+        : await createTextPost(token, account.member_urn, commentary);
       await updateRun(runId, {
         status: "posted",
         linkedin_post_urn: post.postUrn,
@@ -288,6 +317,15 @@ export async function runDailyPost(
   }
   const dryRun = opts?.dryRun ?? settings.dry_run;
 
+  // Format rotation (M15): the weekly plan decides today's post shape. An
+  // 'off' day skips the cron entirely (manual runs still work, as documents).
+  const todayPlan: DayFormat = parseDayFormats(settings.day_formats)[weekdayInTimezone(settings.timezone)];
+  if (trigger === "cron" && !opts?.retryOnly && todayPlan === "off") {
+    console.log("[daily-post] today is 'off' in the weekly format plan — skipping");
+    return { status: "skipped", reason: "day-off" };
+  }
+  let postFormat: PostFormat = todayPlan === "off" ? "document" : todayPlan;
+
   // 2. Reap anything a prior killed invocation left non-terminal. A silently
   // killed pre-post run now ALSO produces an email (previously it never did).
   try {
@@ -325,7 +363,7 @@ export async function runDailyPost(
   let stage = "topic";
   try {
     // 4. Topic (a retry can re-run the same topic via topicOverride).
-    await updateRun(runId, { status: "generating" });
+    await updateRun(runId, { status: "generating", post_format: postFormat });
     const picked = opts?.topicOverride ?? (await pickTrendingTopic({ recentTopics: await recentTopics(30) }));
     topic = picked.topic;
     await updateRun(runId, { topic: picked.topic, angle: picked.angle });
@@ -341,10 +379,19 @@ export async function runDailyPost(
       deadlineAt: invokedAt + 245_000,
     });
 
+    // An image day needs a page image; if the renderer produced none, degrade
+    // to a document post rather than losing the day.
+    if (postFormat === "image" && fg.images.length === 0) {
+      console.warn("[daily-post] image format requested but no page images rendered — falling back to document");
+      postFormat = "document";
+      await updateRun(runId, { post_format: postFormat });
+    }
+
     // 6. Upload artifacts (always, so even blocked runs are reviewable). Best-effort.
     stage = "upload";
     let pdfUrl: string | null = null;
     let zipUrl: string | null = null;
+    let imageUrl: string | null = null;
     try {
       const slug = slugify(fg.plan.title);
       const [pdfBlob, zipBlob] = await Promise.all([
@@ -353,6 +400,12 @@ export async function runDailyPost(
       ]);
       pdfUrl = pdfBlob.url;
       zipUrl = zipBlob.url;
+      if (postFormat === "image") {
+        // The cover page PNG is the posting artifact for an image day — an
+        // approval-mode decide runs in a later invocation and re-downloads it.
+        const imgBlob = await uploadBlob(`auto/${runId}/${slug}-page-01.png`, fg.images[0], "image/png", { addRandomSuffix: true });
+        imageUrl = imgBlob.url;
+      }
       try {
         await recordGeneration({
           id: runId,
@@ -379,6 +432,7 @@ export async function runDailyPost(
       source_count: fg.research.sources.length,
       pdf_url: pdfUrl,
       zip_url: zipUrl,
+      image_url: imageUrl,
       api_version: getApiVersion(),
       timings_json: fg.timings,
     });
@@ -456,6 +510,9 @@ export async function runDailyPost(
       if (!pdfUrl) {
         throw new Error("approval mode needs the uploaded PDF artifact, but the blob upload failed");
       }
+      if (postFormat === "image" && !imageUrl) {
+        throw new Error("approval mode on an image day needs the uploaded page image, but the blob upload failed");
+      }
       const minted = await mintApprovalToken(runId);
       await updateRun(runId, {
         status: "awaiting_approval",
@@ -472,13 +529,15 @@ export async function runDailyPost(
       return { status: "awaiting_approval", runId, pdfUrl };
     }
 
-    // 10-12. Publish (token → document upload → post) via the shared tail.
+    // 10-12. Publish (token → media upload → post) via the shared tail.
     return await publishRunToLinkedIn({
       runId,
       topic,
       caption: guard.clean,
       planTitle: fg.plan.title,
+      format: postFormat,
       pdf: fg.pdf,
+      image: postFormat === "image" ? fg.images[0] : undefined,
       pdfUrl,
     });
   } catch (err) {

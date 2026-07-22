@@ -41,14 +41,14 @@ function isBlobUrl(url: string): boolean {
   }
 }
 
-const PDF_MAX_BYTES = 105 * 1024 * 1024; // LinkedIn's cap is 100MB; headroom for the check downstream
+const ARTIFACT_MAX_BYTES = 105 * 1024 * 1024; // LinkedIn's cap is 100MB; headroom for the check downstream
 
-async function fetchPdf(url: string): Promise<Buffer | null> {
+async function fetchArtifact(url: string): Promise<Buffer | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length === 0 || buf.length > PDF_MAX_BYTES) return null;
+    if (buf.length === 0 || buf.length > ARTIFACT_MAX_BYTES) return null;
     return buf;
   } catch {
     return null;
@@ -100,11 +100,21 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ error: "Caption check failed", reasons: guard.reasons }, { status: 400 });
   }
 
-  if (!run.pdf_url || !isBlobUrl(run.pdf_url)) return NextResponse.json({ error: "This run has no PDF artifact to post." }, { status: 409 });
-  const pdf = await fetchPdf(run.pdf_url);
-  if (!pdf) {
-    // No state change — transient blob fetch problems shouldn't burn the token.
-    return NextResponse.json({ error: "Could not fetch the PDF artifact — try again in a minute." }, { status: 502 });
+  // Fetch the posting artifact for this run's format (M15) BEFORE claiming,
+  // so a transient blob problem doesn't burn the single-use token. Text posts
+  // need no media at all.
+  let pdf: Buffer | undefined;
+  let image: Buffer | undefined;
+  if (run.post_format === "document") {
+    if (!run.pdf_url || !isBlobUrl(run.pdf_url)) return NextResponse.json({ error: "This run has no PDF artifact to post." }, { status: 409 });
+    const buf = await fetchArtifact(run.pdf_url);
+    if (!buf) return NextResponse.json({ error: "Could not fetch the PDF artifact — try again in a minute." }, { status: 502 });
+    pdf = buf;
+  } else if (run.post_format === "image") {
+    if (!run.image_url || !isBlobUrl(run.image_url)) return NextResponse.json({ error: "This run has no image artifact to post." }, { status: 409 });
+    const buf = await fetchArtifact(run.image_url);
+    if (!buf) return NextResponse.json({ error: "Could not fetch the image artifact — try again in a minute." }, { status: 502 });
+    image = buf;
   }
 
   const claimed = await claimApprovalDecision({
@@ -121,7 +131,9 @@ export async function POST(request: Request): Promise<Response> {
     topic: run.topic ?? run.plan_title ?? "today's field guide",
     caption: guard.clean,
     planTitle: run.plan_title ?? "Field Guide",
+    format: run.post_format,
     pdf,
+    image,
     pdfUrl: run.pdf_url,
   });
   return NextResponse.json(summary);

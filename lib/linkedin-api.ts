@@ -225,6 +225,49 @@ export async function uploadDocument(accessToken: string, ownerUrn: string, pdf:
   throw new LinkedInTimeoutError(`[linkedin:upload] document not AVAILABLE after ${POLL_MAX_ATTEMPTS} polls`, 0);
 }
 
+/**
+ * Initialize → PUT bytes → poll until AVAILABLE. Returns the image URN.
+ * Mirrors uploadDocument: /rest/images has the same initializeUpload → PUT →
+ * poll lifecycle and the same encoded-URN-in-path requirement.
+ */
+export async function uploadImage(accessToken: string, ownerUrn: string, png: Buffer): Promise<string> {
+  const initRes = await tfetch(`${REST_BASE}/images?action=initializeUpload`, {
+    method: "POST",
+    headers: restHeaders(accessToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ initializeUploadRequest: { owner: ownerUrn } }),
+  });
+  if (!initRes.ok) throw await toError(initRes, "img-init");
+  const init = (await initRes.json()) as { value?: { uploadUrl?: string; image?: string } };
+  const uploadUrl = init.value?.uploadUrl;
+  const imageUrn = init.value?.image;
+  if (!uploadUrl || !imageUrn) {
+    throw new LinkedInApiError("[linkedin:img-upload] initializeUpload missing uploadUrl/image", initRes.status);
+  }
+
+  const putRes = await tfetch(
+    uploadUrl,
+    {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/octet-stream" },
+      body: new Uint8Array(png),
+    },
+    UPLOAD_TIMEOUT_MS,
+  );
+  if (!putRes.ok && putRes.status !== 201) throw await toError(putRes, "img-put");
+
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const getRes = await tfetch(`${REST_BASE}/images/${encodeURIComponent(imageUrn)}`, { headers: restHeaders(accessToken) });
+    if (!getRes.ok) throw await toError(getRes, "img-poll");
+    const img = (await getRes.json()) as { status?: string };
+    if (img.status === "AVAILABLE") return imageUrn;
+    if (img.status === "PROCESSING_FAILED" || img.status === "FAILED") {
+      throw new LinkedInProcessingError("[linkedin:img-upload] image processing failed", getRes.status);
+    }
+  }
+  throw new LinkedInTimeoutError(`[linkedin:img-upload] image not AVAILABLE after ${POLL_MAX_ATTEMPTS} polls`, 0);
+}
+
 const POST_URN_RE = /^urn:li:(share|ugcPost):[0-9A-Za-z_-]+$/;
 
 /**
@@ -262,6 +305,72 @@ export async function createDocumentPost(
     );
   }
   return { postUrn, postUrl: `https://www.linkedin.com/feed/update/${postUrn}/` };
+}
+
+/** Shared tail for the non-document post shapes: same body skeleton as
+ * createDocumentPost, same fail-loud x-restli-id handling. */
+async function createPost(
+  accessToken: string,
+  body: Record<string, unknown>,
+  op: string,
+): Promise<{ postUrn: string; postUrl: string }> {
+  const res = await tfetch(`${REST_BASE}/posts`, {
+    method: "POST",
+    headers: restHeaders(accessToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok && res.status !== 201) throw await toError(res, op);
+  const postUrn = res.headers.get("x-restli-id");
+  if (!postUrn || !POST_URN_RE.test(postUrn)) {
+    throw new LinkedInApiError(
+      `[linkedin:${op}] post created but x-restli-id header missing/invalid (${postUrn ?? "null"}) — manual check required`,
+      res.status,
+    );
+  }
+  return { postUrn, postUrl: `https://www.linkedin.com/feed/update/${postUrn}/` };
+}
+
+/** Image post (M15 format rotation). `commentary` must be little-text-escaped. */
+export function createImagePost(
+  accessToken: string,
+  authorUrn: string,
+  commentary: string,
+  imageUrn: string,
+  title: string,
+): Promise<{ postUrn: string; postUrl: string }> {
+  return createPost(
+    accessToken,
+    {
+      author: authorUrn,
+      commentary,
+      visibility: "PUBLIC",
+      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      content: { media: { title, id: imageUrn, altText: title } },
+      lifecycleState: "PUBLISHED",
+      isReshareDisabledByAuthor: false,
+    },
+    "img-post-create",
+  );
+}
+
+/** Text-only post (M15 format rotation). `commentary` must be little-text-escaped. */
+export function createTextPost(
+  accessToken: string,
+  authorUrn: string,
+  commentary: string,
+): Promise<{ postUrn: string; postUrl: string }> {
+  return createPost(
+    accessToken,
+    {
+      author: authorUrn,
+      commentary,
+      visibility: "PUBLIC",
+      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      lifecycleState: "PUBLISHED",
+      isReshareDisabledByAuthor: false,
+    },
+    "text-post-create",
+  );
 }
 
 export async function deletePost(accessToken: string, postUrn: string): Promise<void> {

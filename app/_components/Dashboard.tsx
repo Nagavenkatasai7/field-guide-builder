@@ -218,6 +218,7 @@ export default function Dashboard() {
           status={status} settings={settings} connected={connected}
           busyToggle={busyToggle} busyRunNow={busyRunNow}
           onToggle={toggle} onRunNow={runNow} onDisconnect={disconnect}
+          onPlanSaved={setSettings}
         />
       ) : null}
     </main>
@@ -421,6 +422,7 @@ function RunRow({ run, onChanged }: { run: AutomationRunWire; onChanged: () => v
         <div className="flex items-center gap-2 min-w-0">
           <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>
           {run.dryRun && run.status !== "dry_run" ? <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 shrink-0">dry</span> : null}
+          {run.format && run.format !== "document" ? <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 shrink-0">{run.format}</span> : null}
           <span className="text-sm font-medium truncate">{run.topic || run.planTitle || "(picking topic…)"}</span>
         </div>
         <span className="text-[10px] uppercase tracking-wider text-[var(--color-mute)] shrink-0">{run.trigger} · {formatDate(run.createdAt)}</span>
@@ -499,11 +501,12 @@ function AlertsTab({ alerts }: { alerts: AlertWire[] }) {
 }
 
 function SettingsTab({
-  status, settings, connected, busyToggle, busyRunNow, onToggle, onRunNow, onDisconnect,
+  status, settings, connected, busyToggle, busyRunNow, onToggle, onRunNow, onDisconnect, onPlanSaved,
 }: {
   status: LinkedinStatus | null; settings: AutomationSettingsResponse | null; connected: boolean;
   busyToggle: boolean; busyRunNow: boolean;
   onToggle: (f: "enabled" | "dryRun" | "approvalMode", v: boolean) => void; onRunNow: (dryRun: boolean) => void; onDisconnect: () => void;
+  onPlanSaved: (s: AutomationSettingsResponse) => void;
 }) {
   const daysLeft = connected && status?.connected ? status.daysLeft : null;
   return (
@@ -547,6 +550,64 @@ function SettingsTab({
         </div>
         <p className="text-[11px] text-[var(--color-mute)]">Email alerts go to your configured address. Posts auto-pick a fresh trending AI/ML topic.</p>
       </div>
+
+      <WeeklyPlanCard settings={settings} onSaved={onPlanSaved} />
+    </div>
+  );
+}
+
+// JS weekday indices (0=Sunday) displayed Monday-first.
+const PLAN_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
+const PLAN_DAY_LABELS: Record<number, string> = { 0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat" };
+const PLAN_OPTIONS = ["off", "document", "text", "image"] as const;
+
+function WeeklyPlanCard({ settings, onSaved }: { settings: AutomationSettingsResponse | null; onSaved: (s: AutomationSettingsResponse) => void }) {
+  const [plan, setPlan] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const current = plan ?? (settings?.dayFormats ? settings.dayFormats.split(",") : Array(7).fill("document"));
+
+  async function save(next: string[]) {
+    setPlan(next);
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/automation/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dayFormats: next.join(",") }),
+      });
+      const j = (await res.json()) as AutomationSettingsResponse & { error?: string };
+      if (!res.ok) setError(j.error || "Save failed");
+      else onSaved(j);
+    } catch {
+      setError("Network error — change not saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-lg border border-black/5 p-5 grid gap-3 md:col-span-2">
+      <p className="text-xs uppercase tracking-wider text-[var(--color-mute)]">Weekly format plan</p>
+      <p className="text-xs text-[var(--color-mute)]">What shape each day posts as. Off days skip entirely — 3-4 quality posts a week with real engagement beat 7 into silence. Text and image days still generate the full PDF guide (it feeds the blog/newsletter); only the LinkedIn post shape changes.</p>
+      <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+        {PLAN_DAY_ORDER.map((d) => (
+          <label key={d} className="grid gap-1 text-center">
+            <span className="text-[10px] uppercase tracking-wider text-[var(--color-mute)]">{PLAN_DAY_LABELS[d]}</span>
+            <select
+              value={current[d] ?? "document"}
+              disabled={busy}
+              onChange={(e) => { const next = [...current]; next[d] = e.target.value; void save(next); }}
+              className="text-xs border border-black/10 rounded p-1.5 bg-[var(--color-cream)] disabled:opacity-50"
+            >
+              {PLAN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </label>
+        ))}
+      </div>
+      {error ? <p className="text-xs text-red-700">{error}</p> : null}
     </div>
   );
 }

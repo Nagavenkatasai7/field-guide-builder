@@ -102,6 +102,10 @@ async function ensureSchema(): Promise<void> {
   // Repurposing engine (M14): blog/thread/newsletter derivatives of a posted
   // guide, generated on demand and stored as one JSON blob.
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS repurpose_json jsonb`;
+  // Format rotation (M15): what shape this run posts as, and the cover-image
+  // artifact an 'image' run needs at (possibly much later) approval time.
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS post_format text NOT NULL DEFAULT 'document'`;
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS image_url text`;
 
   // Singleton automation settings. Defaults are SAFE: automation OFF and
   // dry_run ON until the user explicitly enables it (default-off rollout).
@@ -117,6 +121,10 @@ async function ensureSchema(): Promise<void> {
     )
   `;
   await sql`ALTER TABLE automation_settings ADD COLUMN IF NOT EXISTS approval_mode boolean NOT NULL DEFAULT false`;
+  // Format rotation (M15): 7 comma-separated tokens (off|document|text|image)
+  // indexed by JS weekday 0=Sunday..6=Saturday. Default = document every day,
+  // which preserves pre-M15 behavior exactly.
+  await sql`ALTER TABLE automation_settings ADD COLUMN IF NOT EXISTS day_formats text NOT NULL DEFAULT 'document,document,document,document,document,document,document'`;
 
   // Engagement cockpit (M13): daily suggestions of posts/articles worth a
   // manual comment, each with an LLM-drafted comment the owner copies by hand.
@@ -277,7 +285,13 @@ export type ScheduledRunRow = {
   approval_expires_at: string | null;
   personal_take: string | null;
   repurpose_json: RepurposeBundle | null;
+  post_format: PostFormat;
+  image_url: string | null;
 };
+
+/** What shape a run publishes as. 'off' is a settings-only value (skip the day). */
+export type PostFormat = "document" | "text" | "image";
+export type DayFormat = PostFormat | "off";
 
 /** Derivatives of a posted guide for owned channels (blog, X, newsletter). */
 export type RepurposeBundle = {
@@ -293,8 +307,22 @@ export type AutomationSettings = {
   approval_mode: boolean;
   post_hour: number;
   timezone: string;
+  day_formats: string;
   updated_at: string | null;
 };
+
+export const DAY_FORMAT_TOKENS: readonly DayFormat[] = ["off", "document", "text", "image"] as const;
+export const DEFAULT_DAY_FORMATS = "document,document,document,document,document,document,document";
+
+/** Parse the stored plan into 7 tokens; anything malformed degrades to the
+ * pre-M15 default (document daily) rather than disarming the automation. */
+export function parseDayFormats(raw: string | null | undefined): DayFormat[] {
+  const parts = (raw ?? "").split(",").map((s) => s.trim().toLowerCase());
+  if (parts.length !== 7 || parts.some((p) => !DAY_FORMAT_TOKENS.includes(p as DayFormat))) {
+    return DEFAULT_DAY_FORMATS.split(",") as DayFormat[];
+  }
+  return parts as DayFormat[];
+}
 
 // --- linkedin_account ---
 
@@ -387,7 +415,8 @@ const SCHEDULED_RUN_COLUMNS = `
   id, created_at::text, updated_at::text, run_date::text, trigger, status, dry_run,
   topic, angle, plan_title, caption, pdf_url, zip_url, page_count, source_count,
   linkedin_post_urn, linkedin_post_url, api_version, error, posted_at::text, timings_json,
-  approval_token_hash, approval_expires_at::text, personal_take, repurpose_json
+  approval_token_hash, approval_expires_at::text, personal_take, repurpose_json,
+  post_format, image_url
 `;
 
 /**
@@ -447,6 +476,7 @@ const SCHEDULED_RUN_UPDATABLE = [
   "page_count", "source_count", "linkedin_post_urn", "linkedin_post_url",
   "api_version", "error", "posted_at", "timings_json",
   "approval_token_hash", "approval_expires_at", "personal_take", "repurpose_json",
+  "post_format", "image_url",
 ] as const;
 
 export type ScheduledRunPatch = Partial<Pick<ScheduledRunRow, (typeof SCHEDULED_RUN_UPDATABLE)[number]>>;
@@ -620,13 +650,13 @@ export async function getCronRunForDate(runDate: string): Promise<ScheduledRunRo
 
 export async function getAutomationSettings(): Promise<AutomationSettings> {
   await ensureSchema();
-  const res = await sql<{ enabled: boolean; dry_run: boolean; approval_mode: boolean; post_hour: number; timezone: string; updated_at: string }>`
-    SELECT enabled, dry_run, approval_mode, post_hour, timezone, updated_at::text FROM automation_settings WHERE id = 1
+  const res = await sql<{ enabled: boolean; dry_run: boolean; approval_mode: boolean; post_hour: number; timezone: string; day_formats: string; updated_at: string }>`
+    SELECT enabled, dry_run, approval_mode, post_hour, timezone, day_formats, updated_at::text FROM automation_settings WHERE id = 1
   `;
   const row = res.rows[0];
   if (!row) {
     // Safe defaults before the user ever opens settings: OFF + dry-run ON.
-    return { enabled: false, dry_run: true, approval_mode: false, post_hour: 12, timezone: "America/New_York", updated_at: null };
+    return { enabled: false, dry_run: true, approval_mode: false, post_hour: 12, timezone: "America/New_York", day_formats: DEFAULT_DAY_FORMATS, updated_at: null };
   }
   return row;
 }
@@ -731,17 +761,19 @@ export async function updateAutomationSettings(patch: {
   approval_mode?: boolean;
   post_hour?: number;
   timezone?: string;
+  day_formats?: string;
 }): Promise<AutomationSettings> {
   await ensureSchema();
-  const res = await sql<{ enabled: boolean; dry_run: boolean; approval_mode: boolean; post_hour: number; timezone: string; updated_at: string }>`
-    INSERT INTO automation_settings (id, enabled, dry_run, approval_mode, post_hour, timezone)
+  const res = await sql<{ enabled: boolean; dry_run: boolean; approval_mode: boolean; post_hour: number; timezone: string; day_formats: string; updated_at: string }>`
+    INSERT INTO automation_settings (id, enabled, dry_run, approval_mode, post_hour, timezone, day_formats)
     VALUES (
       1,
       COALESCE(${patch.enabled ?? null}, false),
       COALESCE(${patch.dry_run ?? null}, true),
       COALESCE(${patch.approval_mode ?? null}, false),
       COALESCE(${patch.post_hour ?? null}, 12),
-      COALESCE(${patch.timezone ?? null}, 'America/New_York')
+      COALESCE(${patch.timezone ?? null}, 'America/New_York'),
+      COALESCE(${patch.day_formats ?? null}, ${DEFAULT_DAY_FORMATS})
     )
     ON CONFLICT (id) DO UPDATE SET
       enabled = COALESCE(${patch.enabled ?? null}, automation_settings.enabled),
@@ -749,8 +781,9 @@ export async function updateAutomationSettings(patch: {
       approval_mode = COALESCE(${patch.approval_mode ?? null}, automation_settings.approval_mode),
       post_hour = COALESCE(${patch.post_hour ?? null}, automation_settings.post_hour),
       timezone = COALESCE(${patch.timezone ?? null}, automation_settings.timezone),
+      day_formats = COALESCE(${patch.day_formats ?? null}, automation_settings.day_formats),
       updated_at = now()
-    RETURNING enabled, dry_run, approval_mode, post_hour, timezone, updated_at::text
+    RETURNING enabled, dry_run, approval_mode, post_hour, timezone, day_formats, updated_at::text
   `;
   return res.rows[0];
 }

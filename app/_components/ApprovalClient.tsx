@@ -129,6 +129,7 @@ export default function ApprovalClient() {
             <p className="font-serif text-xl">{preview.planTitle || preview.topic || "Field guide"}</p>
             {preview.topic && preview.planTitle ? <p className="text-xs text-[var(--color-mute)] mt-1">{preview.topic}</p> : null}
             <div className="flex items-center gap-4 mt-3 text-xs">
+              <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">posts as {preview.format}</span>
               {preview.pdfUrl ? <a ref={pdfRef} target="_blank" rel="noreferrer" className="underline text-[var(--color-ink)] font-medium">Open the PDF ↗</a> : null}
               {preview.pageCount ? <span className="text-[var(--color-mute)]">{preview.pageCount} pages</span> : null}
               {preview.expiresAt ? <span className="text-[var(--color-mute)]">Window closes {new Date(preview.expiresAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span> : null}

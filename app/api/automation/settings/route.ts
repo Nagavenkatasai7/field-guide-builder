@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getAutomationSettings, storageEnabled, updateAutomationSettings, type AutomationSettings } from "@/lib/storage";
+import {
+  DAY_FORMAT_TOKENS,
+  DEFAULT_DAY_FORMATS,
+  getAutomationSettings,
+  parseDayFormats,
+  storageEnabled,
+  updateAutomationSettings,
+  type AutomationSettings,
+  type DayFormat,
+} from "@/lib/storage";
 
 export const runtime = "nodejs";
 
@@ -11,10 +20,13 @@ export type AutomationSettingsResponse = {
   approvalMode: boolean;
   postHour: number;
   timezone: string;
+  dayFormats: string;
   scheduleLabel: string;
 };
 
 function toResponse(s: AutomationSettings): AutomationSettingsResponse {
+  const plan = parseDayFormats(s.day_formats);
+  const activeDays = plan.filter((f) => f !== "off").length;
   return {
     storage: true,
     enabled: s.enabled,
@@ -22,15 +34,23 @@ function toResponse(s: AutomationSettings): AutomationSettingsResponse {
     approvalMode: s.approval_mode,
     postHour: s.post_hour,
     timezone: s.timezone,
-    scheduleLabel: `~${s.post_hour}:00 ${s.timezone.replace("_", " ")}, daily (auto-picks a trending AI/ML topic)`,
+    dayFormats: plan.join(","),
+    scheduleLabel: `~${s.post_hour}:00 ${s.timezone.replace("_", " ")}, ${activeDays === 7 ? "daily" : `${activeDays} day(s)/week`} (auto-picks a trending AI/ML topic)`,
   };
 }
 
 export async function GET() {
   if (!storageEnabled()) {
-    return NextResponse.json({ storage: false, enabled: false, dryRun: true, approvalMode: false, postHour: 9, timezone: "America/New_York", scheduleLabel: "storage not configured" } satisfies AutomationSettingsResponse);
+    return NextResponse.json({ storage: false, enabled: false, dryRun: true, approvalMode: false, postHour: 9, timezone: "America/New_York", dayFormats: DEFAULT_DAY_FORMATS, scheduleLabel: "storage not configured" } satisfies AutomationSettingsResponse);
   }
   return NextResponse.json(toResponse(await getAutomationSettings()));
+}
+
+/** Strict validation for writes (parseDayFormats degrades silently on READ;
+ * a typo in a write should be rejected, not silently rewritten). */
+function isValidDayFormats(raw: string): boolean {
+  const parts = raw.split(",").map((s) => s.trim().toLowerCase());
+  return parts.length === 7 && parts.every((p) => DAY_FORMAT_TOKENS.includes(p as DayFormat));
 }
 
 const Body = z.object({
@@ -39,6 +59,7 @@ const Body = z.object({
   approvalMode: z.boolean().optional(),
   postHour: z.number().int().min(0).max(23).optional(),
   timezone: z.string().min(2).max(64).optional(),
+  dayFormats: z.string().max(120).optional(),
 });
 
 // Must match the cron entries in vercel.json ("0 16 * * *" + "0 17 * * *").
@@ -84,6 +105,9 @@ export async function POST(request: Request) {
   }
   const parsed = Body.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Bad request" }, { status: 400 });
+  if (parsed.data.dayFormats != null && !isValidDayFormats(parsed.data.dayFormats)) {
+    return NextResponse.json({ error: "dayFormats must be 7 comma-separated values of off|document|text|image (Sunday first)" }, { status: 400 });
+  }
 
   // Validate the EFFECTIVE schedule (patch merged over current settings) so a
   // post_hour/timezone combination the fixed UTC crons can never hit is
@@ -110,6 +134,7 @@ export async function POST(request: Request) {
     approval_mode: parsed.data.approvalMode,
     post_hour: parsed.data.postHour,
     timezone: parsed.data.timezone,
+    day_formats: parsed.data.dayFormats?.toLowerCase(),
   });
   return NextResponse.json(toResponse(updated));
 }

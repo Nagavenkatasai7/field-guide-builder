@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "@/lib/auth";
 import { hashApprovalToken, verifyApprovalToken, PERSONAL_TAKE_MAX_CHARS } from "@/lib/approval";
-import { getRun, storageEnabled } from "@/lib/storage";
+import { getRun, storageEnabled, type PostFormat } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -16,6 +16,7 @@ export type ApprovalPreviewResponse = {
   pageCount: number | null;
   expiresAt: string | null;
   personalTakeMaxChars: number;
+  format: PostFormat;
 };
 
 /**
@@ -50,5 +51,6 @@ export async function GET(request: Request): Promise<Response> {
     pageCount: run.page_count,
     expiresAt: run.approval_expires_at,
     personalTakeMaxChars: PERSONAL_TAKE_MAX_CHARS,
+    format: run.post_format,
   } satisfies ApprovalPreviewResponse);
 }
