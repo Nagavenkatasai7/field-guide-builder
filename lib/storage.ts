@@ -144,6 +144,22 @@ async function ensureSchema(): Promise<void> {
   `;
   await sql`CREATE INDEX IF NOT EXISTS engagement_items_date_idx ON engagement_items (item_date DESC, created_at DESC)`;
 
+  // Connection pipeline (M16): drafted connection notes for target companies.
+  // Like the cockpit, PREPARE-only — the owner sends every request by hand.
+  await sql`
+    CREATE TABLE IF NOT EXISTS connection_targets (
+      id          text PRIMARY KEY,
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      company     text NOT NULL,
+      role_hint   text,
+      note        text NOT NULL,
+      status      text NOT NULL DEFAULT 'fresh'  -- 'fresh' | 'sent' | 'dismissed'
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS connection_targets_created_idx ON connection_targets (created_at DESC)`;
+  // Weekly recap idempotency (M16).
+  await sql`ALTER TABLE automation_settings ADD COLUMN IF NOT EXISTS last_recap_date date`;
+
   // Log of out-of-band alerts (emails) so they're visible in the dashboard.
   await sql`
     CREATE TABLE IF NOT EXISTS alerts (
@@ -713,6 +729,110 @@ export async function setEngagementItemStatus(id: string, status: "fresh" | "use
   await ensureSchema();
   const res = await sql`
     UPDATE engagement_items SET status = ${status} WHERE id = ${id} RETURNING id
+  `;
+  return res.rowCount === 1;
+}
+
+// --- connection_targets (M16 pipeline) ---
+
+export type ConnectionTargetRow = {
+  id: string;
+  created_at: string;
+  company: string;
+  role_hint: string | null;
+  note: string;
+  status: "fresh" | "sent" | "dismissed";
+};
+
+export async function insertConnectionTargets(
+  items: Array<{ company: string; role_hint: string | null; note: string }>,
+): Promise<void> {
+  await ensureSchema();
+  for (const it of items) {
+    await sql`
+      INSERT INTO connection_targets (id, company, role_hint, note)
+      VALUES (${newRunId()}, ${it.company}, ${it.role_hint}, ${it.note})
+    `;
+  }
+}
+
+export async function listConnectionTargets(limit = 40): Promise<ConnectionTargetRow[]> {
+  await ensureSchema();
+  const res = await sql<ConnectionTargetRow>`
+    SELECT id, created_at::text, company, role_hint, note, status
+    FROM connection_targets ORDER BY created_at DESC LIMIT ${limit}
+  `;
+  return res.rows;
+}
+
+export async function setConnectionTargetStatus(id: string, status: "fresh" | "sent" | "dismissed"): Promise<boolean> {
+  await ensureSchema();
+  const res = await sql`
+    UPDATE connection_targets SET status = ${status} WHERE id = ${id} RETURNING id
+  `;
+  return res.rowCount === 1;
+}
+
+// --- weekly recap (M16 owned metrics) ---
+
+export type WeeklyStats = {
+  posted: number;
+  byFormat: Record<string, number>;
+  blocked: number;
+  failed: number;
+  skipped: number;
+  engagementUsed: number;
+  connectionsSent: number;
+};
+
+export async function getWeeklyStats(): Promise<WeeklyStats> {
+  await ensureSchema();
+  const posted = await sql<{ post_format: string; n: string }>`
+    SELECT post_format, count(*)::text AS n FROM scheduled_runs
+    WHERE status = 'posted' AND posted_at > now() - interval '7 days'
+    GROUP BY post_format
+  `;
+  const outcomes = await sql<{ status: string; n: string }>`
+    SELECT status, count(*)::text AS n FROM scheduled_runs
+    WHERE created_at > now() - interval '7 days' AND status IN ('blocked', 'failed', 'skipped')
+    GROUP BY status
+  `;
+  const engagement = await sql<{ n: string }>`
+    SELECT count(*)::text AS n FROM engagement_items
+    WHERE status = 'used' AND created_at > now() - interval '7 days'
+  `;
+  const connections = await sql<{ n: string }>`
+    SELECT count(*)::text AS n FROM connection_targets
+    WHERE status = 'sent' AND created_at > now() - interval '7 days'
+  `;
+  const byFormat: Record<string, number> = {};
+  let totalPosted = 0;
+  for (const r of posted.rows) {
+    byFormat[r.post_format] = Number(r.n);
+    totalPosted += Number(r.n);
+  }
+  const outcome = (s: string) => Number(outcomes.rows.find((r) => r.status === s)?.n ?? 0);
+  return {
+    posted: totalPosted,
+    byFormat,
+    blocked: outcome("blocked"),
+    failed: outcome("failed"),
+    skipped: outcome("skipped"),
+    engagementUsed: Number(engagement.rows[0]?.n ?? 0),
+    connectionsSent: Number(connections.rows[0]?.n ?? 0),
+  };
+}
+
+/** Idempotency for the Sunday recap email — returns true only for the ONE
+ * caller that successfully claims `date` (the WHERE guards a concurrent
+ * fire). Upserts so a fresh install with no settings row still gets recaps. */
+export async function claimWeeklyRecap(date: string): Promise<boolean> {
+  await ensureSchema();
+  const res = await sql`
+    INSERT INTO automation_settings (id, last_recap_date) VALUES (1, ${date})
+    ON CONFLICT (id) DO UPDATE SET last_recap_date = ${date}, updated_at = now()
+    WHERE automation_settings.last_recap_date IS NULL OR automation_settings.last_recap_date < ${date}
+    RETURNING id
   `;
   return res.rowCount === 1;
 }

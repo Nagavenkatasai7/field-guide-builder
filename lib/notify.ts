@@ -21,7 +21,17 @@ export type AlertEvent =
   | { kind: "failed"; topic?: string; stage: string; error: string }
   | { kind: "needs_reconnect"; reason: string }
   | { kind: "needs_review"; detail: string }
-  | { kind: "token_expiring"; daysLeft: number };
+  | { kind: "token_expiring"; daysLeft: number }
+  | {
+      kind: "weekly_recap";
+      posted: number;
+      byFormat: Record<string, number>;
+      blocked: number;
+      failed: number;
+      skipped: number;
+      engagementUsed: number;
+      connectionsSent: number;
+    };
 
 function render(event: AlertEvent): { subject: string; text: string } {
   switch (event.kind) {
@@ -46,6 +56,13 @@ function render(event: AlertEvent): { subject: string; text: string } {
       return { subject: `🔎 A run needs manual review`, text: `A run was interrupted while posting and may or may not have published to LinkedIn.\n\n${event.detail}\n\nCheck your LinkedIn profile and the run log in the app.` };
     case "token_expiring":
       return { subject: `⏳ LinkedIn token expires in ${event.daysLeft} day(s)`, text: `Your LinkedIn connection expires in ${event.daysLeft} day(s). Open the app and click "Reconnect LinkedIn" to keep daily posting alive.` };
+    case "weekly_recap": {
+      const formats = Object.entries(event.byFormat).map(([f, n]) => `${f} ×${n}`).join(", ") || "—";
+      return {
+        subject: `📈 Weekly recap: ${event.posted} post(s), ${event.engagementUsed} comment(s) made`,
+        text: `Your week on the field-guide system:\n\nPosts published: ${event.posted} (${formats})\nBlocked (safety gate): ${event.blocked} · Failed: ${event.failed} · Skipped: ${event.skipped}\nEngagement comments marked done: ${event.engagementUsed}\nConnection notes sent: ${event.connectionsSent}\n\nReach compounds from the comments and replies more than from the post count — if engagementUsed is 0, that's the number to fix next week. For traffic your posts drove to the portfolio, check your site analytics for utm_source=field-guide.`,
+      };
+    }
   }
 }
 

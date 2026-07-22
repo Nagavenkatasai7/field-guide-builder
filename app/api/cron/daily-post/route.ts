@@ -1,6 +1,6 @@
 import { verifyCronSecret } from "@/lib/auth";
-import { getAutomationSettings, getCronRunForDate, getLinkedinStatus } from "@/lib/storage";
-import { hourInTimezone, killSwitchOn, nyDateString, runDailyPost } from "@/lib/daily-post";
+import { claimWeeklyRecap, getAutomationSettings, getCronRunForDate, getLinkedinStatus, getWeeklyStats } from "@/lib/storage";
+import { hourInTimezone, killSwitchOn, nyDateString, runDailyPost, weekdayInTimezone } from "@/lib/daily-post";
 import { sendAlert } from "@/lib/notify";
 
 export const runtime = "nodejs";
@@ -47,6 +47,19 @@ export async function GET(request: Request): Promise<Response> {
         }
       } catch (e) {
         console.error(`[cron] token check failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
+    // Weekly recap (M16): Sunday's post-hour fire also emails the week's
+    // owned metrics. claimWeeklyRecap is an atomic once-per-date guard, and
+    // the whole block is non-fatal — a recap hiccup must never cost a post.
+    if (nyHour === settings.post_hour && weekdayInTimezone(settings.timezone) === 0) {
+      try {
+        if (await claimWeeklyRecap(nyDateString(settings.timezone))) {
+          await sendAlert({ kind: "weekly_recap", ...(await getWeeklyStats()) });
+        }
+      } catch (e) {
+        console.error(`[cron] weekly recap failed (non-fatal): ${e instanceof Error ? e.message : e}`);
       }
     }
 
