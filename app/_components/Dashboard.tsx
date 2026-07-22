@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import EngagePanel from "@/app/_components/EngagePanel";
 import GenerateWorkspace from "@/app/_components/GenerateWorkspace";
 import HistoryPanel from "@/app/_components/HistoryPanel";
 import type { LinkedinStatus } from "@/lib/storage";
@@ -9,10 +10,11 @@ import type { AutomationSettingsResponse } from "@/app/api/automation/settings/r
 import type { AutomationRunsResponse, AutomationRunWire } from "@/app/api/automation/runs/route";
 import type { AlertsResponse, AlertWire } from "@/app/api/automation/alerts/route";
 
-type TabKey = "overview" | "posts" | "history" | "alerts" | "generate" | "settings";
+type TabKey = "overview" | "posts" | "engage" | "history" | "alerts" | "generate" | "settings";
 const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "posts", label: "Posts" },
+  { key: "engage", label: "Engage" },
   { key: "history", label: "History" },
   { key: "alerts", label: "Alerts" },
   { key: "generate", label: "Generate" },
@@ -207,6 +209,7 @@ export default function Dashboard() {
         />
       ) : null}
       {tab === "posts" ? <PostsTab runs={runs} onChanged={load} /> : null}
+      {tab === "engage" ? <EngagePanel /> : null}
       {tab === "history" ? <HistoryPanel /> : null}
       {tab === "alerts" ? <AlertsTab alerts={alerts} /> : null}
       {tab === "generate" ? <GenerateWorkspace /> : null}

@@ -115,6 +115,24 @@ async function ensureSchema(): Promise<void> {
   `;
   await sql`ALTER TABLE automation_settings ADD COLUMN IF NOT EXISTS approval_mode boolean NOT NULL DEFAULT false`;
 
+  // Engagement cockpit (M13): daily suggestions of posts/articles worth a
+  // manual comment, each with an LLM-drafted comment the owner copies by hand.
+  // Deliberately NO automation of the LinkedIn action itself (ToS).
+  await sql`
+    CREATE TABLE IF NOT EXISTS engagement_items (
+      id             text PRIMARY KEY,
+      created_at     timestamptz NOT NULL DEFAULT now(),
+      item_date      date NOT NULL,
+      url            text NOT NULL,
+      title          text NOT NULL,
+      snippet        text,
+      source         text NOT NULL,     -- 'linkedin' | 'article'
+      draft_comment  text NOT NULL,
+      status         text NOT NULL DEFAULT 'fresh'  -- 'fresh' | 'used' | 'dismissed'
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS engagement_items_date_idx ON engagement_items (item_date DESC, created_at DESC)`;
+
   // Log of out-of-band alerts (emails) so they're visible in the dashboard.
   await sql`
     CREATE TABLE IF NOT EXISTS alerts (
@@ -587,6 +605,62 @@ export async function getAutomationSettings(): Promise<AutomationSettings> {
     return { enabled: false, dry_run: true, approval_mode: false, post_hour: 12, timezone: "America/New_York", updated_at: null };
   }
   return row;
+}
+
+// --- engagement_items (M13 cockpit) ---
+
+export type EngagementItemRow = {
+  id: string;
+  created_at: string;
+  item_date: string;
+  url: string;
+  title: string;
+  snippet: string | null;
+  source: "linkedin" | "article";
+  draft_comment: string;
+  status: "fresh" | "used" | "dismissed";
+};
+
+export async function insertEngagementItems(
+  itemDate: string,
+  items: Array<{ url: string; title: string; snippet: string | null; source: "linkedin" | "article"; draft_comment: string }>,
+): Promise<void> {
+  await ensureSchema();
+  for (const it of items) {
+    await sql`
+      INSERT INTO engagement_items (id, item_date, url, title, snippet, source, draft_comment)
+      VALUES (${newRunId()}, ${itemDate}, ${it.url}, ${it.title}, ${it.snippet}, ${it.source}, ${it.draft_comment})
+    `;
+  }
+}
+
+export async function listEngagementItems(itemDate: string): Promise<EngagementItemRow[]> {
+  await ensureSchema();
+  const res = await sql<EngagementItemRow>`
+    SELECT id, created_at::text, item_date::text, url, title, snippet, source, draft_comment, status
+    FROM engagement_items WHERE item_date = ${itemDate}
+    ORDER BY source DESC, created_at ASC
+  `;
+  return res.rows;
+}
+
+/** URLs suggested recently — the finder filters these so the cockpit never
+ * re-suggests something the owner already engaged with (or dismissed). */
+export async function recentEngagementUrls(days = 14): Promise<string[]> {
+  await ensureSchema();
+  const res = await sql<{ url: string }>`
+    SELECT DISTINCT url FROM engagement_items
+    WHERE created_at > now() - make_interval(days => ${days})
+  `;
+  return res.rows.map((r) => r.url);
+}
+
+export async function setEngagementItemStatus(id: string, status: "fresh" | "used" | "dismissed"): Promise<boolean> {
+  await ensureSchema();
+  const res = await sql`
+    UPDATE engagement_items SET status = ${status} WHERE id = ${id} RETURNING id
+  `;
+  return res.rowCount === 1;
 }
 
 // --- alerts (email log) ---

@@ -22,8 +22,9 @@ const TOPIC_TIMEOUT_MS = 35_000;
 
 // Reputational guard: drop anything whose title/snippet trips these. We post
 // "how-it-works" explainers, never drama. (Substring match on a normalized
-// lowercase string.)
-const BLOCKLIST_TERMS = [
+// lowercase string.) Exported for the engagement cockpit (M13) — suggested
+// comment targets go through the same filter as post topics.
+export const BLOCKLIST_TERMS = [
   "lawsuit", "sued", "sue ", "settlement", "layoff", "laid off", "fired", "resign",
   "breach", "hacked", "hack ", "leak", "exploit", "vulnerability", "scandal",
   "controversy", "backlash", "boycott", "banned", "ban ", "lawsuit", "ftc", "doj",
@@ -31,7 +32,7 @@ const BLOCKLIST_TERMS = [
   "death", "dies", "killed", "shooting", "arrest", "fraud", "scam", "porn", "nsfw",
   "racist", "sexist", "nazi", "shutdown", "bankrupt", "crash ", "plunge", "lawsuit",
 ];
-const BLOCKED_DOMAINS = ["tmz.com", "dailymail.co.uk", "nypost.com", "reddit.com", "x.com", "twitter.com", "facebook.com"];
+export const BLOCKED_DOMAINS = ["tmz.com", "dailymail.co.uk", "nypost.com", "reddit.com", "x.com", "twitter.com", "facebook.com"];
 
 const PAPER_DOMAINS = ["arxiv.org", "huggingface.co", "blog.google", "openai.com", "ai.meta.com", "www.anthropic.com", "deepmind.google"];
 
