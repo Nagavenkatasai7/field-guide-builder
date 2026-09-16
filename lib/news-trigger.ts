@@ -25,7 +25,6 @@
  */
 
 import { z } from "zod";
-import puppeteer from "puppeteer-core";
 import { chat } from "@/lib/llm";
 import { research, searchCandidates } from "@/lib/tavily";
 import { BLOCKED_DOMAINS, BLOCKLIST_TERMS, isNearDuplicate } from "@/lib/topic-picker";
