@@ -16,7 +16,7 @@ import { recordAlert, storageEnabled } from "@/lib/storage";
 export type AlertEvent =
   | { kind: "posted"; topic: string; postUrl: string }
   | { kind: "dry_run"; topic: string; pdfUrl?: string | null }
-  | { kind: "awaiting_approval"; topic: string; approveUrl: string; pdfUrl?: string | null; expiresAt: string }
+  | { kind: "awaiting_approval"; topic: string; approveUrl: string; pdfUrl?: string | null; expiresAt: string; note?: string }
   | { kind: "blocked"; topic: string; reason: string }
   | { kind: "failed"; topic?: string; stage: string; error: string }
   | { kind: "needs_reconnect"; reason: string }
@@ -43,7 +43,7 @@ function render(event: AlertEvent): { subject: string; text: string } {
       const expires = new Date(event.expiresAt).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
       return {
         subject: `🟡 Approve today's post: ${event.topic}`,
-        text: `Today's Field Guide is generated and passed every safety gate — it is waiting for YOUR go-ahead (nothing has been posted).\n\nTopic: ${event.topic}\n${event.pdfUrl ? `PDF preview: ${event.pdfUrl}\n` : ""}\nReview, add your personal take, and approve or skip here:\n${event.approveUrl}\n\nThe link is single-use and expires ${expires} ET. If it lapses, the day is skipped — nothing posts without you.`,
+        text: `Today's Field Guide is generated and passed every safety gate — it is waiting for YOUR go-ahead (nothing has been posted).\n\nTopic: ${event.topic}\n${event.pdfUrl ? `PDF preview: ${event.pdfUrl}\n` : ""}${event.note ? `\n${event.note}\n` : ""}\nReview, add your personal take, and approve or skip here:\n${event.approveUrl}\n\nThe link is single-use and expires ${expires} ET. If it lapses, the day is skipped — nothing posts without you.`,
       };
     }
     case "blocked":

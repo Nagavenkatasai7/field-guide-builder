@@ -17,6 +17,8 @@ import { hmacSign, timingSafeEqual } from "@/lib/auth";
 /** How long an approve link stays clickable. After this, the reaper sweeps the
  * run to 'skipped' — a day-old field guide is stale content, not a backlog. */
 export const APPROVAL_TTL_HOURS = 24;
+/** News takes go stale in hours, not days. */
+export const NEWS_APPROVAL_TTL_HOURS = 4;
 
 const TOKEN_VERSION = "v1";
 
@@ -37,8 +39,10 @@ export async function hashApprovalToken(token: string): Promise<string> {
   return hmacSign(`approve-hash:${TOKEN_VERSION}:${token}`);
 }
 
-export async function mintApprovalToken(runId: string): Promise<MintedApprovalToken> {
-  const exp = Math.floor(Date.now() / 1000) + APPROVAL_TTL_HOURS * 3600;
+/** News mode (M17): token TTL in HOURS so the daily path keeps 24h while a
+ * reactive take dies fast — stale news must never post. */
+export async function mintApprovalToken(runId: string, ttlHours: number = APPROVAL_TTL_HOURS): Promise<MintedApprovalToken> {
+  const exp = Math.floor(Date.now() / 1000) + ttlHours * 3600;
   const n = nonce();
   const sig = await hmacSign(`approve:${TOKEN_VERSION}:${runId}:${exp}:${n}`);
   const token = `${TOKEN_VERSION}.${runId}.${exp}.${n}.${sig}`;

@@ -23,7 +23,7 @@ async function firstExisting(paths: string[]): Promise<string | null> {
   return null;
 }
 
-async function launchBrowser(): Promise<Browser> {
+export async function launchBrowser(): Promise<Browser> {
   const isProduction = process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
 
   if (isProduction) {

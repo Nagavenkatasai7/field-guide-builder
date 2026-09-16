@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runDailyPost } from "@/lib/daily-post";
+import { runNewsScan } from "@/lib/news-trigger";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -12,6 +13,10 @@ const Body = z.object({
   topic: z.string().min(2).max(200).optional(),
   angle: z.string().max(1000).optional(),
   urls: z.array(z.string().url()).max(3).optional(),
+  // M17: run the news flow now (force = ignore the waking-window check) so the
+  // dashboard can smoke-test or trigger a reactive take on demand.
+  news: z.boolean().default(false),
+  force: z.boolean().default(false),
 });
 
 /** Same-origin guard (cheap CSRF hardening for a state-changing POST). */
@@ -42,7 +47,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });
   }
   try {
-    const { dryRun, topic, angle, urls } = parsed.data;
+    const { dryRun, topic, angle, urls, news, force } = parsed.data;
+    if (news) {
+      const summary = await runNewsScan({ dryRun, force });
+      return NextResponse.json(summary);
+    }
     const topicOverride = topic ? { topic, angle: angle ?? "", urls } : undefined;
     const summary = await runDailyPost("manual", { dryRun, topicOverride });
     return NextResponse.json(summary);

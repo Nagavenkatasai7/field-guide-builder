@@ -100,21 +100,32 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ error: "Caption check failed", reasons: guard.reasons }, { status: 400 });
   }
 
-  // Fetch the posting artifact for this run's format (M15) BEFORE claiming,
-  // so a transient blob problem doesn't burn the single-use token. Text posts
-  // need no media at all.
+  // News mode (M17): a text+diagram run approves to text when the diagram
+  // failed, or image when it rendered. The diagram image is optional — the
+  // post is the take. pdf is never required for news runs.
   let pdf: Buffer | undefined;
   let image: Buffer | undefined;
-  if (run.post_format === "document") {
-    if (!run.pdf_url || !isBlobUrl(run.pdf_url)) return NextResponse.json({ error: "This run has no PDF artifact to post." }, { status: 409 });
-    const buf = await fetchArtifact(run.pdf_url);
-    if (!buf) return NextResponse.json({ error: "Could not fetch the PDF artifact — try again in a minute." }, { status: 502 });
-    pdf = buf;
-  } else if (run.post_format === "image") {
-    if (!run.image_url || !isBlobUrl(run.image_url)) return NextResponse.json({ error: "This run has no image artifact to post." }, { status: 409 });
-    const buf = await fetchArtifact(run.image_url);
-    if (!buf) return NextResponse.json({ error: "Could not fetch the image artifact — try again in a minute." }, { status: 502 });
-    image = buf;
+  if (run.kind === "news") {
+    // Optional best-effort diagram fetch: only used when present and fresh.
+    if (run.image_url) {
+      try {
+        const buf = await fetchArtifact(run.image_url);
+        if (buf) image = buf;
+      } catch { /* a missing diagram never blocks the take */ }
+    }
+  } else {
+    // Guide mode: document needs pdf, image needs image.
+    if (run.post_format === "document") {
+      if (!run.pdf_url || !isBlobUrl(run.pdf_url)) return NextResponse.json({ error: "This run has no PDF artifact to post." }, { status: 409 });
+      const buf = await fetchArtifact(run.pdf_url);
+      if (!buf) return NextResponse.json({ error: "Could not fetch the PDF artifact — try again in a minute." }, { status: 502 });
+      pdf = buf;
+    } else if (run.post_format === "image") {
+      if (!run.image_url || !isBlobUrl(run.image_url)) return NextResponse.json({ error: "This run has no image artifact to post." }, { status: 409 });
+      const buf = await fetchArtifact(run.image_url);
+      if (!buf) return NextResponse.json({ error: "Could not fetch the image artifact — try again in a minute." }, { status: 502 });
+      image = buf;
+    }
   }
 
   const claimed = await claimApprovalDecision({
@@ -126,12 +137,29 @@ export async function POST(request: Request): Promise<Response> {
   });
   if (!claimed) return NextResponse.json({ error: "This run was already decided or the window expired." }, { status: 409 });
 
+  // News jitter (M17): a reactive take must not post the instant the owner
+  // taps approve — that would recreate the robotic pattern the jitter exists
+  // to break. After claiming, hold tiny remaining gaps inline, and park
+  // longer ones for the next news-scan tick to publish when due.
+  if (run.kind === "news" && run.scheduled_not_before) {
+    const waitMs = new Date(run.scheduled_not_before).getTime() - Date.now();
+    if (waitMs > 180_000) {
+      return NextResponse.json({
+        status: "scheduled",
+        runId: run.id,
+        scheduledFor: run.scheduled_not_before,
+        message: "Approved — it will post at its scheduled time (human-jitter delay).",
+      }, { status: 202 });
+    }
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+  }
+
   const summary = await publishRunToLinkedIn({
     runId: run.id,
     topic: run.topic ?? run.plan_title ?? "today's field guide",
     caption: guard.clean,
     planTitle: run.plan_title ?? "Field Guide",
-    format: run.post_format,
+    format: run.kind === "news" ? (image ? "image" : "text") : run.post_format,
     pdf,
     image,
     pdfUrl: run.pdf_url,

@@ -106,6 +106,22 @@ async function ensureSchema(): Promise<void> {
   // artifact an 'image' run needs at (possibly much later) approval time.
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS post_format text NOT NULL DEFAULT 'document'`;
   await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS image_url text`;
+  // News-triggered mode (M17): kind distinguishes a reactive take from the
+  // daily field guide ('guide' | 'news'); scheduled_not_before is the random
+  // post-earliest timestamp the decide route enforces.
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'guide'`;
+  await sql`ALTER TABLE scheduled_runs ADD COLUMN IF NOT EXISTS scheduled_not_before timestamptz`;
+
+  // News-URL dedupe (M17): every candidate URL is marked when seen so quiet
+  // re-scanning never re-offers yesterday's story. Cap 1k rows (oldest fall off).
+  await sql`
+    CREATE TABLE IF NOT EXISTS news_seen_urls (
+      url         text PRIMARY KEY,
+      seen_at     timestamptz NOT NULL DEFAULT now(),
+      news_title  text
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS news_seen_urls_seen_idx ON news_seen_urls (seen_at DESC)`;
 
   // Singleton automation settings. Defaults are SAFE: automation OFF and
   // dry_run ON until the user explicitly enables it (default-off rollout).
@@ -279,6 +295,7 @@ export type ScheduledRunRow = {
   updated_at: string;
   run_date: string;
   trigger: "cron" | "manual";
+  kind: "guide" | "news"; // M17: reactive take vs the daily field guide
   status: ScheduledRunStatus;
   dry_run: boolean;
   topic: string | null;
@@ -303,6 +320,7 @@ export type ScheduledRunRow = {
   repurpose_json: RepurposeBundle | null;
   post_format: PostFormat;
   image_url: string | null;
+  scheduled_not_before: string | null;
 };
 
 /** What shape a run publishes as. 'off' is a settings-only value (skip the day). */
@@ -428,11 +446,11 @@ export async function clearLinkedinAccount(): Promise<void> {
 // --- scheduled_runs ---
 
 const SCHEDULED_RUN_COLUMNS = `
-  id, created_at::text, updated_at::text, run_date::text, trigger, status, dry_run,
+  id, created_at::text, updated_at::text, run_date::text, trigger, kind, status, dry_run,
   topic, angle, plan_title, caption, pdf_url, zip_url, page_count, source_count,
   linkedin_post_urn, linkedin_post_url, api_version, error, posted_at::text, timings_json,
   approval_token_hash, approval_expires_at::text, personal_take, repurpose_json,
-  post_format, image_url
+  post_format, image_url, scheduled_not_before::text
 `;
 
 /**
@@ -450,18 +468,83 @@ export async function claimRun(
   const id = newRunId();
   if (trigger === "cron") {
     const res = await sql`
-      INSERT INTO scheduled_runs (id, run_date, trigger, status, dry_run)
-      VALUES (${id}, ${runDate}, 'cron', 'claimed', ${dryRun})
+      INSERT INTO scheduled_runs (id, run_date, trigger, kind, status, dry_run)
+      VALUES (${id}, ${runDate}, 'cron', 'guide', 'claimed', ${dryRun})
       ON CONFLICT (run_date) WHERE trigger = 'cron' DO NOTHING
       RETURNING id
     `;
     return { claimed: res.rowCount === 1, id };
   }
   await sql`
-    INSERT INTO scheduled_runs (id, run_date, trigger, status, dry_run)
-    VALUES (${id}, ${runDate}, 'manual', 'claimed', ${dryRun})
+    INSERT INTO scheduled_runs (id, run_date, trigger, kind, status, dry_run)
+    VALUES (${id}, ${runDate}, 'manual', 'guide', 'claimed', ${dryRun})
   `;
   return { claimed: true, id };
+}
+
+// --- News mode (M17) ---
+
+/** Claims a NEWS run slot for today. News runs use trigger='manual' (they
+ * must NOT occupy the daily cron's one-per-day slot — the field guide and a
+ * reactive take can coexist on the same day) but are rate-limited by
+ * newsRunTodayExists/newsPostsInLastDays checks before generation. */
+export async function claimNewsRun(runDate: string): Promise<string | null> {
+  await ensureSchema();
+  const id = newRunId();
+  try {
+    await sql`
+      INSERT INTO scheduled_runs (id, run_date, trigger, kind, status, dry_run)
+      VALUES (${id}, ${runDate}, 'manual', 'news', 'claimed', false)
+    `;
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+export async function newsRunTodayExists(runDate: string): Promise<boolean> {
+  await ensureSchema();
+  const res = await sql<{ id: string }>`
+    SELECT id FROM scheduled_runs
+    WHERE run_date = ${runDate} AND kind = 'news'
+      AND status NOT IN ('skipped')
+    LIMIT 1
+  `;
+  return res.rows.length > 0;
+}
+
+/** News posts (terminal + in-flight non-terminal) in the trailing window —
+ * used for the weekly cadence cap. */
+export async function newsPostsInLastDays(days: number): Promise<number> {
+  await ensureSchema();
+  const res = await sql<{ n: number }>`
+    SELECT count(*)::int AS n FROM scheduled_runs
+    WHERE kind = 'news'
+      AND status IN ('posted', 'awaiting_approval', 'posting', 'approved')
+      AND created_at > now() - (${days} || ' days')::interval
+  `;
+  return res.rows[0]?.n ?? 0;
+}
+
+export async function isNewsUrlSeen(url: string): Promise<boolean> {
+  await ensureSchema();
+  const res = await sql`SELECT url FROM news_seen_urls WHERE url = ${url}`;
+  return res.rows.length > 0;
+}
+
+export async function markNewsUrlSeen(url: string, title: string): Promise<void> {
+  await ensureSchema();
+  await sql`
+    INSERT INTO news_seen_urls (url, news_title) VALUES (${url}, ${title})
+    ON CONFLICT (url) DO NOTHING
+  `;
+  // Cheap cap: keep the newest ~1000 so the table never grows unbounded.
+  await sql`
+    DELETE FROM news_seen_urls
+    WHERE url IN (
+      SELECT url FROM news_seen_urls ORDER BY seen_at DESC OFFSET 1000
+    )
+  `;
 }
 
 /**
@@ -490,9 +573,9 @@ export async function reclaimRetryableCronRun(
 const SCHEDULED_RUN_UPDATABLE = [
   "status", "topic", "angle", "plan_title", "caption", "pdf_url", "zip_url",
   "page_count", "source_count", "linkedin_post_urn", "linkedin_post_url",
-  "api_version", "error", "posted_at", "timings_json",
+  "api_version", "error", "posted_at", "timings_json", "kind",
   "approval_token_hash", "approval_expires_at", "personal_take", "repurpose_json",
-  "post_format", "image_url",
+  "post_format", "image_url", "scheduled_not_before",
 ] as const;
 
 export type ScheduledRunPatch = Partial<Pick<ScheduledRunRow, (typeof SCHEDULED_RUN_UPDATABLE)[number]>>;
@@ -557,6 +640,19 @@ export async function getRun(id: string): Promise<ScheduledRunRow | null> {
   return res.rows[0] ?? null;
 }
 
+/** News runs approved and parked by the decide route whose randomized slot
+ * has arrived (M17). Published at the top of each news-scan tick. */
+export async function dueApprovedNewsRuns(): Promise<ScheduledRunRow[]> {
+  await ensureSchema();
+  const res = await db.query<ScheduledRunRow>(
+    `SELECT ${SCHEDULED_RUN_COLUMNS} FROM scheduled_runs
+     WHERE kind = 'news' AND status = 'approved'
+       AND scheduled_not_before IS NOT NULL AND scheduled_not_before <= now()
+     ORDER BY created_at ASC LIMIT 5`,
+  );
+  return res.rows;
+}
+
 /** Recent picked topics for the daily auto-pick dedupe. Source of truth is the
  * topic written at pick time (NOT generations.topic, which is the subtitle). */
 export async function recentTopics(n = 30): Promise<string[]> {
@@ -590,6 +686,7 @@ export async function reapStaleRuns(): Promise<{ failed: string[]; needsReview: 
     SET status = 'failed', error = COALESCE(error, 'reaped: invocation died before completing (pre-post stage)'), updated_at = now()
     WHERE status IN ('claimed', 'generating', 'generated', 'uploading', 'approved')
       AND updated_at < now() - interval '15 minutes'
+      AND NOT (status = 'approved' AND kind = 'news')
     RETURNING id
   `;
   const res = await sql<{ id: string }>`
