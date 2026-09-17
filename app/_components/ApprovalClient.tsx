@@ -20,6 +20,7 @@ export default function ApprovalClient() {
   const [caption, setCaption] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const pdfRef = useRef<HTMLAnchorElement>(null);
+  const diagramRef = useRef<HTMLAnchorElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +56,10 @@ export default function ApprovalClient() {
     if (pdfRef.current && preview?.pdfUrl && preview.pdfUrl.startsWith("https://")) {
       pdfRef.current.href = preview.pdfUrl;
     }
-  }, [preview?.pdfUrl]);
+    if (diagramRef.current && preview?.imageUrl && preview.imageUrl.startsWith("https://")) {
+      diagramRef.current.href = preview.imageUrl;
+    }
+  }, [preview?.pdfUrl, preview?.imageUrl]);
 
   async function decide(action: "approve" | "skip") {
     if (phase.kind !== "ready") return;
@@ -131,6 +135,7 @@ export default function ApprovalClient() {
             <div className="flex items-center gap-4 mt-3 text-xs">
               <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">posts as {preview.format}</span>
               {preview.pdfUrl ? <a ref={pdfRef} target="_blank" rel="noreferrer" className="underline text-[var(--color-ink)] font-medium">Open the PDF ↗</a> : null}
+              {preview.imageUrl ? <a ref={diagramRef} target="_blank" rel="noreferrer" className="underline text-[var(--color-ink)] font-medium">View diagram ↗</a> : null}
               {preview.pageCount ? <span className="text-[var(--color-mute)]">{preview.pageCount} pages</span> : null}
               {preview.expiresAt ? <span className="text-[var(--color-mute)]">Window closes {new Date(preview.expiresAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span> : null}
             </div>

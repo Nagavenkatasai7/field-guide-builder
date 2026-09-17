@@ -8,14 +8,17 @@ import { AUTH_COOKIE, verifySessionToken } from "@/lib/auth";
 // fail closed on signature, hash, status, and expiry.
 const PUBLIC_PATHS = new Set(["/login", "/approve"]);
 const PUBLIC_API_PREFIXES = ["/api/auth/login"];
-// EXACT-match only (never startsWith): the cron endpoint carries no auth
-// cookie and self-authenticates with CRON_SECRET; the approval endpoints
+// EXACT-match only (never startsWith): the cron endpoints carry no auth
+// cookie and self-authenticate with CRON_SECRET; the approval endpoints
 // self-authenticate with the signed capability token. Using a prefix here
 // would also un-gate sibling/typo'd paths (/api/cron/daily-postX) and the
 // manual run-now trigger — a public auto-post-to-LinkedIn hole. Keep it exact.
+// BOTH cron paths must be listed: /api/cron/daily-post (fixed schedule) and
+// /api/cron/news-scan (M17 news-triggered scan) — a missing entry makes every
+// cron invocation 401 at the proxy before the route's CRON_SECRET check.
 // /api/feed + /api/feed/rss are read-only listings of ALREADY-PUBLIC posts
 // (everything in them is live on LinkedIn) for portfolio/newsletter ingestion.
-const PUBLIC_API_EXACT = new Set(["/api/cron/daily-post", "/api/approval/preview", "/api/approval/decide", "/api/feed", "/api/feed/rss"]);
+const PUBLIC_API_EXACT = new Set(["/api/cron/daily-post", "/api/cron/news-scan", "/api/approval/preview", "/api/approval/decide", "/api/feed", "/api/feed/rss"]);
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

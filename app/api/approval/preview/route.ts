@@ -13,6 +13,7 @@ export type ApprovalPreviewResponse = {
   planTitle: string | null;
   caption: string | null;
   pdfUrl: string | null;
+  imageUrl: string | null;
   pageCount: number | null;
   expiresAt: string | null;
   personalTakeMaxChars: number;
@@ -48,6 +49,7 @@ export async function GET(request: Request): Promise<Response> {
     planTitle: run.plan_title,
     caption: run.caption,
     pdfUrl: run.pdf_url,
+    imageUrl: run.image_url,
     pageCount: run.page_count,
     expiresAt: run.approval_expires_at,
     personalTakeMaxChars: PERSONAL_TAKE_MAX_CHARS,
